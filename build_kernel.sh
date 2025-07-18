@@ -484,9 +484,7 @@ fi
 # the outputs to be picked if we're running in a pipeline one day.
 #
 
-BUILD_CL="${TMP_BUILDSOURCES}/ChangeLog"
-[ ! -f "${BUILD_CL}" ] && BUILD_CL="${TMP_BUILDSOURCES}/ChangeLog.md"
-
+BUILD_CL="${TMP_BUILDSOURCES}/ChangeLog.md"
 if [ -r "${BUILD_CL}" ]; then
 
 	echo "Found change log in sources, copying it into the build ..."
