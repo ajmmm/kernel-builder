@@ -38,7 +38,7 @@
 %endif
 
 # Set pkg_release.
-%global pkg_release 2%{?buildid}%{?dist}
+%global pkg_release 3%{?buildid}%{?dist}
 
 # Architectures upon which we can sign the kernel
 # for secure boot authentication.
