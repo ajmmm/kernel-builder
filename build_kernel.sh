@@ -8,7 +8,6 @@ function fatal() {
 BASENAME=$(basename "${0}")
 BASEPATH=$(dirname "${0}")
 BUILDROOT="${BASEPATH}/buildroot"
-RESULTPATH="${BUILDROOT}/result"
 CURL=$(which curl 2>/dev/null) || fatal "I need curl!"
 MOCK=$(which mock 2>/dev/null) || fatal "I need mock!"
 RPMSIGN=$(which rpmsign 2>/dev/null) || fatal "I need rpmsign/rpm-sign!"
@@ -282,7 +281,7 @@ KERNEL_SRCFILE=${KERNEL_SRCURL##*/}
 
 BUILD_SPEC=$(basename "${ACTUAL_SPEC}")
 BUILD_ID=".ajm${BUILD_PATCHLEVEL}${BUILD_SHA}.${BUILD_TS}"
-BUILD_RESULTPATH="${RESULTPATH}.${BUILD_CHROOT}${BUILD_ID}"
+BUILD_RESULTPATH="${BUILDROOT}/${BUILD_PACKAGE}-${KERNEL_VERSION}${BUILD_ID}.${BUILD_CHROOT}"
 
 #
 # Now generate a temporary path for doing all our work in
