@@ -7,3 +7,4 @@ Added CONFIG_IKCONFIG_PROC=y
 
 v4:
 Added CONFIG_BPFILTER=y
+Added a load of extra cilium configs from CI
