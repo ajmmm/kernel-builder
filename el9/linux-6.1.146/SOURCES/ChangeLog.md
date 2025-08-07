@@ -8,3 +8,8 @@ Added CONFIG_IKCONFIG_PROC=y
 v4:
 Added CONFIG_BPFILTER=y
 Added a load of extra cilium configs from CI
+
+v5:
+Added for ARM64:
+CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS=y
+CONFIG_DYNAMIC_FTRACE_WITH_ARGS=y
