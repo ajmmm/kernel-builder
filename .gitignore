@@ -1,5 +1,5 @@
 BuildString.txt
 results
-mkkrn.tmp.*
+mkbld.tmp.*
+mkbld.manifest.*
 buildroot
-build_kernel.manifest
