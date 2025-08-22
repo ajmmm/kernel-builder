@@ -5,6 +5,10 @@ function fatal() {
 	exit 1
 }
 
+function sep() {
+	echo "==============================================================================="
+}
+
 BUILDROOT="${BASEPATH}/buildroot"
 CURL=$(which curl 2>/dev/null) || fatal "I need curl!"
 MOCK=$(which mock 2>/dev/null) || fatal "I need mock!"
@@ -143,6 +147,8 @@ ACTUAL_SPEC="${ACTUAL_SPECS}/${BASESPEC}"
 [ -r "${ACTUAL_SPEC}" ] || fatal "I don't know how to build source:${BUILD_SOURCE}" \
 	" on arch:${BUILD_ARCH} -- spec not found: ${ACTUAL_SPEC}"
 
+BUILD_SPEC=$(basename "${ACTUAL_SPEC}")
+
 #
 # See if there's a patch number we need to insert into the build ID
 # This will be specified by a file called patchlevel.txt in SOURCES if so.
@@ -180,3 +186,236 @@ if [ "${BUILD_CLEANUP}" == "yes" ]; then
 	exit 0
 fi
 
+#
+# Now generate a temporary path for doing all our work in
+#
+
+TMP_SRCFILE=$(mktemp "${TMPNAME}.bin")
+TMP_BUILDROOT=$(mktemp -d "${TMPNAME}.buildroot.${BUILD_TS}")
+TMP_BUILDSOURCES="${TMP_BUILDROOT}/SOURCES"
+TMP_BUILDSPECS="${TMP_BUILDROOT}/SPECS"
+TMP_BUILDSPEC="${TMP_BUILDSPECS}/${BUILD_SPEC}"
+
+#
+# Some cute variables for our hello, as well as the kernel build string.
+# This can be used to burn build info into spec files later.
+#
+
+BUILD_ID=".ajm${BUILD_PATCHLEVEL}${BUILD_SHA}.${BUILD_TS}"
+
+#
+# Hacky function to produce a full result path
+#
+
+function get_resultpath() {
+
+	local basever="${1}"
+
+	[ -z "${basever}" ] && fatal "get_resultpath: No basever"
+	[ -z "${BUILDROOT}" ] && fatal "get_resultpath: No BUILDROOT"
+
+	local resultpath="${BUILDROOT}/${BASEPKG}-${basever}${BUILD_ID}.${BUILD_CHROOT}"
+
+	echo "${resultpath}"
+}
+
+#
+# Setup builds
+#
+
+function setup_build() {
+
+	local basesrcurl="${1}"
+	local basesrctar="${2}"
+	
+	[ -z "${basesrcurl}" ] && fatal "setup_build: no basesrcurl"
+	[ -z "${basesrctar}" ] && fatal "setup_build: no basesrctar"
+
+	sep
+
+	echo "* Downloading ${basesrcurl}..."
+	${CURL} "${basesrcurl}" -o "${TMP_SRCFILE}" --fail --silent --show-error \
+		|| fatal "Curling the source failed: ${basesrcurl}"
+
+	echo "* Copying local sources into place ..."
+	cp -rf "${ACTUAL_SOURCES}" "${TMP_BUILDSOURCES}" || fatal "Copy SOURCES failed"
+
+	echo "* Moving downloaded source into ${basesrctar} ..."
+	mv -f "${TMP_SRCFILE}" "${TMP_BUILDSOURCES}/${basesrctar}" || fatal "Move TAR failed"
+
+	echo "Build prepared!"
+	echo ""
+}
+
+#
+# Run build
+#
+
+function run_build() {
+
+	sep
+
+	echo "Here we go..."
+
+	echo "* Initialising chroot: ${BUILD_CHROOT} ..."
+	${MOCK} --root "${BUILD_CHROOT}" --init --quiet || fatal "Mock init failed"
+
+	echo "* Building src.rpm ..."
+	${MOCK} --root "${BUILD_CHROOT}" \
+		--buildsrpm \
+		--spec="${TMP_BUILDSPEC}" \
+		--sources="${TMP_BUILDSOURCES}" \
+		--define "buildid ${BUILD_ID}" \
+		--resultdir="${BUILD_RESULTPATH}" \
+		|| fatal "Mock build src.rpm failed"
+	
+	#
+	# Get a list of all the Source RPMs we just built based on the BUILD ID.
+	#
+
+	SOURCE_RPM=$(find "${BUILD_RESULTPATH}" -name "*.src.rpm" -type f -print 2>/dev/null)
+	[ -f "${SOURCE_RPM}" ] || fatal "Cannot find source RPM: ${SOURCE_RPM}"
+
+	#
+	# Declare an array of all output files
+	#
+
+	BUILD_RESULTS=( "${SOURCE_RPM}" )
+
+	#
+	# Do we need to do a binary build?
+	#
+
+	if [ "${BUILD_BINARIES}" == "yes" ]; then
+
+		echo "Building bin.rpm for ${ACTUAL_ARCH} ..."
+		${MOCK} --root "${BUILD_CHROOT}" \
+			--rebuild "${SOURCE_RPM}" \
+			--define "buildid ${BUILD_ID}" \
+			--resultdir="${BUILD_RESULTPATH}" \
+			|| fatal "Mock build-rpm (bin.rpm) failed"
+		
+		#
+		# Get a list of every compiled binary we just produced and stuff it into
+		# our BUILD_RESULTS array
+		#
+
+		echo "* Identifying compiled binaries ..."
+
+		for f in "${BUILD_RESULTPATH}"/*"${BUILD_ID}"*.rpm; do
+			BUILD_RESULTS+=( "${f}" )
+		done
+
+	else
+
+		echo "* Skipping binary build ..."
+
+	fi
+
+	#
+	# Tell the user how many things we built.
+	#
+
+	echo "Files built: ${#BUILD_RESULTS[@]}"
+	for f in ${BUILD_RESULTS[@]}; do
+		echo "File: ${f}"
+	done
+
+	#
+	# Sign what we need to sign
+	#
+
+	if [ "${BUILD_SIGNED}" == "yes" ]; then
+
+		echo "Signing files..."
+
+		for f in ${BUILD_RESULTS[@]}; do
+			${RPMSIGN} --addsign \
+				--define "_gpg_name ${DEVS}" "${f}" 1>/dev/null \
+				|| fatal "rpmsign failed on file: ${f}"
+		done
+
+	else
+
+		echo "Skipping signing ..."
+
+	fi
+
+	#
+	# Dump a list of what we've built
+	#
+
+	echo "Build is complete!"
+
+	ls -lhR "${BUILD_RESULTPATH}"
+
+	#
+	# Extract the full build string from the source RPM. Note, because the source
+	# RPM won't have our architecutre on, we append that ourselves.
+	#
+
+	BUILD_STRING=$(basename "${SOURCE_RPM}" | sed -e "s|${BASEPKG}-||g;s|.src.rpm||g")
+	BUILD_STRING="${BUILD_STRING}.${BUILD_ARCH}"
+	printf "%s\n" "${BUILD_STRING}" >BuildString.txt
+
+	#
+	# Look for build.log and rename it to something that includes the build string,
+	# so people know where this log file came from.
+	#
+
+	if [ -f "${BUILD_RESULTPATH}/build.log" ]; then
+		echo "Found build log, renaming it ..."
+
+		NEW_BUILDLOG="build-${BUILD_STRING}.log"
+
+		mv -f "${BUILD_RESULTPATH}/build.log" "${BUILD_RESULTPATH}/${NEW_BUILDLOG}" \
+			|| fatal "move build log failed"
+
+		BUILD_RESULTS+=( "${BUILD_RESULTPATH}/${NEW_BUILDLOG}" )
+	fi
+
+	#
+	# Look for a ChangeLog in the sources. If it exists, just copy it across into
+	# the outputs to be picked if we're running in a pipeline one day.
+	#
+
+	BUILD_CL="${TMP_BUILDSOURCES}/ChangeLog.md"
+	if [ -r "${BUILD_CL}" ]; then
+
+		echo "Found change log in sources, copying it into the build ..."
+
+		NEW_CHANGELOG="ChangeLog-${BUILD_STRING}.md"
+
+		cp -f "${BUILD_CL}" "${BUILD_RESULTPATH}/${NEW_CHANGELOG}" \
+			|| fatal "copy change log failed"
+		
+		BUILD_RESULTS+=( "${BUILD_RESULTPATH}/${NEW_CHANGELOG}" )
+
+	else
+
+		echo "No change log found in sources, generating a dummy log ..."
+
+		DUMMY_CHANGELOG="${BUILD_RESULTPATH}/ChangeLog-${BUILD_STRING}.md"
+
+		cat <<__EOF__ >"${DUMMY_CHANGELOG}"
+# ${BASEPKG} for Enterprise Linux
+
+This build of ${BASEPKG} did not have any internal Change Log.
+
+Package name:  ${BASEPKG}
+Package build: ${BUILD_STRING}
+Binary build:  ${BUILD_BINARIES}
+Signed build:  ${BUILD_SIGNED}
+
+__EOF__
+
+		BUILD_RESULTS+=( "${DUMMY_CHANGELOG}" )
+
+	fi
+
+	#
+	# Now print a list of all files we've built into our build manifest
+	#
+
+	printf "%s\n" "${BUILD_RESULTS[@]}" >"${BUILD_MANIFEST}"
+}
