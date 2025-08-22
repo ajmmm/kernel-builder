@@ -32,7 +32,7 @@ BUILD_ARCH=
 BUILD_BINARIES=no
 BUILD_SIGNED=no
 BUILD_TS=$(date -u +%y%m%d.%H%M%S)
-BUILD_MANIFEST="bld.${BASEPKG}.manifest"
+BUILD_MANIFEST="mkbld.manifest.${BASEPKG}"
 BUILD_MOCKROOT=
 
 [ -z "${BASEPKG}" ] && fatal "BASEPKG is undefined"

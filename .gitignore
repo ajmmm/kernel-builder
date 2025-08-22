@@ -1,5 +1,5 @@
 BuildString.txt
 results
 mkbld.tmp.*
+mkbld.manifest.*
 buildroot
-bld.*.manifest
