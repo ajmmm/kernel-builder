@@ -11,6 +11,7 @@ function sep() {
 
 BUILDROOT="${BASEPATH}/buildroot"
 CURL=$(which curl 2>/dev/null) || fatal "I need curl!"
+SPECTOOL=$(which spectool 2>/dev/null) || fatal "I need spectool!"
 MOCK=$(which mock 2>/dev/null) || fatal "I need mock!"
 RPMSIGN=$(which rpmsign 2>/dev/null) || fatal "I need rpmsign/rpm-sign!"
 DEVS="Alasdair McWilliam <alasdair.mcwilliam@outlook.com>"
@@ -31,7 +32,7 @@ BUILD_ARCH=
 BUILD_BINARIES=no
 BUILD_SIGNED=no
 BUILD_TS=$(date -u +%y%m%d.%H%M%S)
-BUILD_MANIFEST=build_kernel.manifest
+BUILD_MANIFEST="bld.${BASEPKG}.manifest"
 BUILD_MOCKROOT=
 
 [ -z "${BASEPKG}" ] && fatal "BASEPKG is undefined"
@@ -227,21 +228,29 @@ function setup_build() {
 
 	local basesrcurl="${1}"
 	local basesrctar="${2}"
-	
-	[ -z "${basesrcurl}" ] && fatal "setup_build: no basesrcurl"
-	[ -z "${basesrctar}" ] && fatal "setup_build: no basesrctar"
 
 	sep
-
-	echo "* Downloading ${basesrcurl}..."
-	${CURL} "${basesrcurl}" -o "${TMP_SRCFILE}" --fail --silent --show-error \
-		|| fatal "Curling the source failed: ${basesrcurl}"
 
 	echo "* Copying local sources into place ..."
 	cp -rf "${ACTUAL_SOURCES}" "${TMP_BUILDSOURCES}" || fatal "Copy SOURCES failed"
 
-	echo "* Moving downloaded source into ${basesrctar} ..."
-	mv -f "${TMP_SRCFILE}" "${TMP_BUILDSOURCES}/${basesrctar}" || fatal "Move TAR failed"
+	if [ -z "${basesrcurl}" ] && [ -z "${basesrctar}" ]; then
+
+		echo " * Running spectool on ${TMP_BUILDSPEC} ..."
+
+		${SPECTOOL} --get-files --sources --directory "${TMP_BUILDSOURCES}" "${ACTUAL_SPEC}" \
+			|| fatal "spectool failed"
+	
+	else
+
+		echo "* Downloading ${basesrcurl}..."
+		${CURL} "${basesrcurl}" -o "${TMP_SRCFILE}" --fail --silent --show-error \
+			|| fatal "Curling the source failed: ${basesrcurl}"
+
+		echo "* Moving downloaded source into ${basesrctar} ..."
+		mv -f "${TMP_SRCFILE}" "${TMP_BUILDSOURCES}/${basesrctar}" || fatal "Move TAR failed"
+
+	fi
 
 	echo "Build prepared!"
 	echo ""
