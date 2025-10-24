@@ -26,6 +26,7 @@ MK_GRUBBY=0
 MK_CLEAN=0
 MK_PATH="${CURPATH}"
 MK_CONFIG=""
+MK_NEWDEF=0
 
 HELPTEXT=$(cat <<__EOF__
   --hash                Include git hash in build version
@@ -38,7 +39,7 @@ HELPTEXT=$(cat <<__EOF__
   --clean               Clean source tree after build
   --src <path>          Specifies linux src path
   --config <file>       Use file as config for build
-  --zconfig <file>      Use file.gz as config for build
+  --newdef		Use defaults for new config symbols
 __EOF__
 )
 
@@ -93,6 +94,10 @@ while (( "$#" )); do
 			MK_CONFIG=$(readlink -f "${ARG2}")
 			[ ! -f "${MK_CONFIG}" ] && fatal "config '${MK_CONFIG}' not file"
 			shift 2 ;;
+		
+		--newdef)
+			MK_NEWDEF=1
+			shift ;;
 		
 		--help|-h)
 			echo "${HELPTEXT}"
@@ -159,13 +164,17 @@ done
 MK_COMMAND="${MAKE} EXTRAVERSION=${EXTRA_VERSION} -j${MK_NPROCS}"
 
 echo "MK_HASH=${MK_HASH} MK_IMAGE=${MK_IMAGE} MK_MODULES=${MK_MODULES} MK_INSTALL=${MK_INSTALL} MK_CLEAN=${MK_CLEAN}"
-echo "MK_VERSION=${MK_VERSION} MK_NPROCS=${MK_NPROCS}"
+echo "MK_VERSION=${MK_VERSION} MK_NEWDEF=${MK_NEWDEF} MK_NPROCS=${MK_NPROCS}"
 echo "MK_COMMAND=${MK_COMMAND}"
 
 sleep 1
 
 if [ "${MK_PREPARE}" -gt 0 ]; then
-	${MK_COMMAND} oldconfig || fatal "make oldconfig failed"
+	if [ "${MK_NEWDEF}" -gt 0 ]; then
+		${MK_COMMAND} olddefconfig || fatal "make olddefconfig failed"
+	else
+		${MK_COMMAND} oldconfig || fatal "make oldconfig failed"
+	fi
 	${MK_COMMAND} prepare || fatal "make prepare failed"
 fi
 if [ "${MK_IMAGE}" -gt 0 ]; then
