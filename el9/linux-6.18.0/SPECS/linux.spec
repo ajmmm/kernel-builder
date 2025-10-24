@@ -1458,6 +1458,7 @@ fi
 %{_mandir}/man8/bpftool-feature.8.gz
 %{_mandir}/man8/bpftool-btf.8.gz
 %{_mandir}/man8/bpftool-struct_ops.8.gz
+%{_mandir}/man8/bpftool-token.8.gz
 %endif
 
 # Empty meta-package.
