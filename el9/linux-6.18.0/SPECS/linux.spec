@@ -24,7 +24,7 @@
 %global _binary_payload w3T.xzdio
 
 # Define the version of the Linux Kernel Archive tarball.
-%global LKAver 6.18-rc2
+%global LKAver 6.18-rc3
 
 # Define the buildid, if required.
 #global buildid .local
