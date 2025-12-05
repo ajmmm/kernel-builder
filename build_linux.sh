@@ -144,19 +144,20 @@ fi
 
 # Generate new version information.
 
-EXTRA_VERSION=$(grep -E "^EXTRAVERSION" "${MK_FILE}" | sed -e 's/^EXTRAVERSION = //g')
+EXTRA_VERSION=$(grep -E "^EXTRAVERSION" "${MK_FILE}" | cut -f2 -d'=' | tr -d '[:space:]')
 if [ "${MK_HASH}" -gt 0 ]; then
 	EXTRA_VERSION="${EXTRA_VERSION}.${GIT_HASH}.${GIT_BRANCH}"
 else
 	EXTRA_VERSION="${EXTRA_VERSION}.${GIT_BRANCH}"
 fi
+echo EXTRA_VERSION=${EXTRA_VERSION}
 
 # Ask the tree for the full release string. The kernel build will fail if a version string
 # is >64 characters in length, so truncate if we need to.
 
 MK_VERSION=$(${MAKE} -s EXTRAVERSION=${EXTRA_VERSION} kernelrelease)
 while [ "${#MK_VERSION}" -gt 63 ]; do
-	EXTRA_VERSION="${EXTRA_VERSION::-1}"
+	EXTRA_VERSION="${EXTRA_VERSION:0:64}"
 	MK_VERSION=$(${MAKE} -s EXTRAVERSION=${EXTRA_VERSION} kernelrelease)
 done
 
