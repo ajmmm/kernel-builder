@@ -171,7 +171,6 @@ MK_VERSION=$(${MAKE} -s EXTRAVERSION=${EXTRA_VERSION} kernelrelease)
 [ -z "${MK_VERSION}" ] && fatal "make kernelrelease failed"
 while [ "${#MK_VERSION}" -gt 63 ]; do
 	EXTRA_VERSION="${EXTRA_VERSION:0:64}"
-	MK_VERSION=$(${MAKE} -s EXTRAVERSION=${EXTRA_VERSION} kernelrelease)
 done
 
 # Do the build
@@ -233,6 +232,9 @@ if [ "${MK_INSTALL}" -gt 0 ]; then
 	sudo -E ${MK_COMMAND} modules_install || fatal "make modules_install failed"
 	sudo -E ${MK_COMMAND} install || fatal "make install failed"
 	sudo -E cp -f ".config" "/boot/config-${MK_VERSION}"
+
+	# Copy over the uncompressed image if we're debugging
+	[ "${MK_DEBUG}" -gt 0 ] && sudo -E cp -f vmlinux "/boot/vmlinux-${MK_VERSION}"
 fi
 if [ "${MK_GRUBBY}" -gt 0 ]; then
 	sudo -E ${GRUBBY} --set-default "/boot/vmlinuz-${MK_VERSION}" || fatal "grubby set-default failed"
