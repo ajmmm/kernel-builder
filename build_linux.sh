@@ -231,6 +231,7 @@ fi
 if [ "${MK_INSTALL}" -gt 0 ]; then
 	sudo -E ${MK_COMMAND} modules_install || fatal "make modules_install failed"
 	sudo -E ${MK_COMMAND} install || fatal "make install failed"
+	sudo -E ${MK_COMMAND} INSTALL_DTBS_PATH=/boot/dtb-${MK_VERSION} dtbs_install || fatal "make dtbs_install failed"
 	sudo -E cp -f ".config" "/boot/config-${MK_VERSION}"
 
 	# Copy over the uncompressed image if we're debugging
