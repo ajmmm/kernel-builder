@@ -134,7 +134,7 @@ MK_NPROCS=$(${NPROC} --all)
 # Get some version information
 GIT_HASH=$(${GIT} show -s --format=%h)
 GIT_BRANCH=$(${GIT} branch | sed -n '/\* /s///p')
-GIT_DETACHED=$(echo "${GIT_BRANCH}" | grep "detached at" | cut -d "(" -f2 | cut -d ")" -f1 | sed -e 's/[ \/]/_/g')
+GIT_DETACHED=$(echo "${GIT_BRANCH}" | grep "detached at" | cut -d "(" -f2 | cut -d ")" -f1 | sed -e 's/[ \/]/_/g' | sed -e 's/^HEAD_detached_at_//g')
 if [ ! -z "${GIT_DETACHED}" ]; then
 	GIT_BRANCH="${GIT_DETACHED}"
 else
