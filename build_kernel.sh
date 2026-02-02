@@ -53,7 +53,10 @@ KERNEL_PATCH=$(echo "${KERNEL_VERSION}" | cut -f3- -d.)
 # Identify if this is a prerelease by exploding out the minor version.
 #
 
-KERNEL_PRERELEASE=$(echo "${KERNEL_MINOR}" | cut -f2 -d-)
+KERNEL_PRERELEASE=no
+if [[ "${KERNEL_MINOR}" == *-* ]]; then
+	KERNEL_PRERELEASE=$(echo "${KERNEL_MINOR}" | cut -f2 -d-)
+fi
 
 #
 # If the PRERELEASE tag is not empty, this is not a formal released version
@@ -73,7 +76,6 @@ if [ ! -z "${KERNEL_PRERELEASE}" ]; then
 	KERNEL_PATCH="0"
 	KERNEL_VERSION="${KERNEL_MAJOR}.${KERNEL_MINOR}.${KERNEL_PATCH}"
 else
-	KERNEL_PRERELEASE="no"
 	KERNEL_CDN="https://cdn.kernel.org/pub/linux/kernel/v${KERNEL_MAJOR}.x"
 	KERNEL_TAR="linux-${KERNEL_VERSION}.tar"
 	KERNEL_TARXZ="${KERNEL_TAR}.xz"
