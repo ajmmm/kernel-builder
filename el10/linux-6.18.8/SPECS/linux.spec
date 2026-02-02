@@ -1520,6 +1520,9 @@ fi
 %kernel_ml_variant_files %{_use_vdso} %{with_std}
 
 %changelog
+* Mon Feb 02 2026 Alasdair McWilliam <alasdair.mcwilliam@isovalent.com>
+- Rebase to 6.18.8
+
 * Wed Dec 24 2025 Akemi Yagi <toracat@elrepo.org> - 6.18.2-2
 - Hyper-V related kernel optioned enabled
   [https://elrepo.org/bugs/view.php?id=1577]
