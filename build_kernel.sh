@@ -62,7 +62,7 @@ fi
 # If the PRERELEASE tag is not empty, this is not a formal released version
 #
 
-if [ ! -z "${KERNEL_PRERELEASE}" ]; then
+if [ "${KERNEL_PRERELEASE}" != "no" ]; then
 	KERNEL_CDN="https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/snapshot"
 	KERNEL_TAR="linux-${KERNEL_VERSION}.tar"
 	KERNEL_TARGZ="${KERNEL_TAR}.gz"
