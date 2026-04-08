@@ -170,7 +170,7 @@ echo EXTRA_VERSION=${EXTRA_VERSION}
 MK_VERSION=$(${MAKE} -s EXTRAVERSION=${EXTRA_VERSION} kernelrelease)
 [ -z "${MK_VERSION}" ] && fatal "make kernelrelease failed"
 while [ "${#MK_VERSION}" -gt 63 ]; do
-	EXTRA_VERSION="${EXTRA_VERSION:0:64}"
+	MK_VERSION="${MK_VERSION:0:63}"
 done
 
 # Do the build
