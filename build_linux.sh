@@ -154,24 +154,23 @@ echo "--------------------------------------------------------------------------
 # Generate new version information.
 
 EXTRA_VERSION=$(grep -E "^EXTRAVERSION" "${MK_FILE}" | cut -f2 -d'=' | tr -d '[:space:]')
+if [ "${MK_DEBUG}" -gt 0 ]; then
+	EXTRA_VERSION="${EXTRA_VERSION}.dbg"
+fi
 if [ "${MK_HASH}" -gt 0 ]; then
 	EXTRA_VERSION="${EXTRA_VERSION}.${GIT_HASH}.${GIT_BRANCH}"
 else
 	EXTRA_VERSION="${EXTRA_VERSION}.${GIT_BRANCH}"
 fi
-if [ "${MK_DEBUG}" -gt 0 ]; then
-	EXTRA_VERSION="${EXTRA_VERSION}.dbg"
-fi
 echo EXTRA_VERSION=${EXTRA_VERSION}
 
 # Ask the tree for the full release string. The kernel build will fail if a version string
-# is >64 characters in length, so truncate if we need to.
+# is >64 characters in length, so truncate if we need to. Note the largest kernel version
+# string should be something like "7.0.0-rc7" so subtract this.
+[ "${#EXTRA_VERSION}" -gt 54 ] && EXTRA_VERSION="${EXTRA_VERSION:0:54}"
 
 MK_VERSION=$(${MAKE} -s EXTRAVERSION=${EXTRA_VERSION} kernelrelease)
 [ -z "${MK_VERSION}" ] && fatal "make kernelrelease failed"
-while [ "${#MK_VERSION}" -gt 63 ]; do
-	MK_VERSION="${MK_VERSION:0:63}"
-done
 
 # Do the build
 MK_COMMAND="${MAKE} EXTRAVERSION=${EXTRA_VERSION} -j${MK_NPROCS}"
