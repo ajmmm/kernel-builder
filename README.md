@@ -12,6 +12,7 @@ automation for bringing up a Fedora cloud dev VM on Parallels.
 
 ## Layout
 
+- `config/` contains shared, non-distro-specific configuration such as Parallels defaults and generic kernel configs.
 - `lib/build.sh` contains shared RPM build helpers used by the build entrypoints.
 - `lib/vm.sh` contains shared helpers for the Parallels/cloud-init workflow.
 - `<target>/vm.conf` contains target-specific VM defaults.
