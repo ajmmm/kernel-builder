@@ -6,7 +6,7 @@ BASEPKG="kernel-ajm"
 BASE_PKG=$(echo "${BASEPKG}" | sed -e 's/-/_/g')
 BASESPEC="linux.spec"
 
-. "${BASEPATH}/build_lib.sh"
+. "${BASEPATH}/lib/build.sh"
 
 #
 # Say hello

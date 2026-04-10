@@ -5,7 +5,7 @@ BASEPATH=$(dirname "${0}")
 BASEPKG="golang-ajm"
 BASESPEC="golang.spec"
 
-. "${BASEPATH}/build_lib.sh"
+. "${BASEPATH}/lib/build.sh"
 
 #
 # Say hello

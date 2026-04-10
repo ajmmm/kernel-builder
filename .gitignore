@@ -3,3 +3,5 @@ results
 mkbld.tmp.*
 mkbld.manifest.*
 buildroot
+.cache
+*.pvm
