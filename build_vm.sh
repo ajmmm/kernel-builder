@@ -15,7 +15,7 @@ HELPTEXT=$(cat <<__EOF__
 ${BASENAME} [--target <path>] [--dry-run] [--debug] <command>
 
 Commands:
-  image         Download the Fedora cloud image
+  image         Download and prepare the Fedora boot image
   seed          Generate cloud-init seed media
   create        Create the Parallels VM
   prl-config    Apply Parallels VM settings to an existing VM
@@ -58,6 +58,7 @@ __EOF__
 case "${VM_COMMAND}" in
 	image)
 		vm_download_image
+		vm_prepare_boot_disk
 		;;
 
 	seed)
@@ -94,6 +95,7 @@ case "${VM_COMMAND}" in
 
 	up)
 		vm_download_image
+		vm_prepare_boot_disk
 		vm_create_seed_iso
 		vm_create
 		vm_boot

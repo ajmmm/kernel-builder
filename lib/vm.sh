@@ -81,11 +81,14 @@ function vm_resolve_auto_bool() {
 	fi
 }
 
-function vm_default_image_url() {
+function vm_default_image_baseurl() {
 	local release="${VM_FEDORA_RELEASE}"
-	local arch="${VM_ARCH}"
 
-	printf "%s\n" "https://download.fedoraproject.org/pub/fedora/linux/releases/${release}/Cloud/${arch}/images/Fedora-Cloud-Base-Generic.${arch}.qcow2"
+	printf "%s\n" "https://download.fedoraproject.org/pub/fedora/linux/releases/${release}/Cloud"
+}
+
+function vm_image_artifacts_url() {
+	printf "%s\n" "${VM_IMAGE_BASEURL}/${VM_ARCH}/images/"
 }
 
 function vm_target_name() {
@@ -143,22 +146,28 @@ function vm_resolve_vm_defaults() {
 	VM_PARALLELS_DIR="${VM_PARALLELS_DIR:-${VM_CACHE_DIR}/parallels/${VM_TARGET_SLUG}}"
 	VM_BUNDLE_PATH="${VM_BUNDLE_PATH:-${VM_PARALLELS_DIR}/${VM_NAME}.pvm}"
 	VM_CLOUD_INIT_DIR="${VM_CLOUD_INIT_DIR:-${VM_TARGET_DIR}/cloud-init}"
-	VM_IMAGE_URL="${VM_IMAGE_URL:-$(vm_default_image_url)}"
-	VM_IMAGE_FILE="${VM_IMAGE_FILE:-${VM_IMAGE_DIR}/$(basename "${VM_IMAGE_URL}")}"
+	VM_IMAGE_BASEURL="${VM_IMAGE_BASEURL:-$(vm_default_image_baseurl)}"
+	VM_IMAGE_ARTIFACTS_URL="${VM_IMAGE_ARTIFACTS_URL:-$(vm_image_artifacts_url)}"
 	VM_SEED_ISO="${VM_SEED_ISO:-${VM_SEED_DIR}/seed.iso}"
 	VM_INSTANCE_ID="${VM_INSTANCE_ID:-${VM_NAME}-01}"
 	VM_SSH_KEY_PATH="${VM_SSH_KEY_PATH:-${HOME}/.ssh/id_ed25519.pub}"
+	VM_CONVERTED_DIR="${VM_CONVERTED_DIR:-${VM_IMAGE_DIR}/converted}"
+	VM_RECREATE="${VM_RECREATE:-0}"
 }
 
 function vm_resolve_prl_defaults() {
 	PRL_AUTOSTART="${PRL_AUTOSTART:-off}"
-	PRL_AUTOSTOP="${PRL_AUTOSTOP:-shutdown}"
+	PRL_AUTOSTOP="${PRL_AUTOSTOP:-stop}"
+	PRL_STARTUP_VIEW="${PRL_STARTUP_VIEW:-same}"
+	PRL_ON_SHUTDOWN="${PRL_ON_SHUTDOWN:-close}"
+	PRL_ON_WINDOW_CLOSE="${PRL_ON_WINDOW_CLOSE:-keep-running}"
 	PRL_PAUSE_IDLE="${PRL_PAUSE_IDLE:-off}"
 	PRL_ADAPTIVE_HYPERVISOR="${PRL_ADAPTIVE_HYPERVISOR:-auto}"
 	PRL_NESTED_VIRT="${PRL_NESTED_VIRT:-auto}"
 	PRL_SHARED_PROFILE="${PRL_SHARED_PROFILE:-off}"
 	PRL_SMART_MOUNT="${PRL_SMART_MOUNT:-off}"
 	PRL_SHARE_HOST_FOLDERS="${PRL_SHARE_HOST_FOLDERS:-on}"
+	PRL_SHARE_HOST_FOLDERS_AUTOMOUNT="${PRL_SHARE_HOST_FOLDERS_AUTOMOUNT:-on}"
 	PRL_SHARE_HOST_FOLDERS_DEFINED="${PRL_SHARE_HOST_FOLDERS_DEFINED:-off}"
 	PRL_SHARE_HOST_FOLDER_DOWNLOADS="${PRL_SHARE_HOST_FOLDER_DOWNLOADS:-on}"
 	PRL_SHARE_HOST_FOLDER_DOWNLOADS_NAME="${PRL_SHARE_HOST_FOLDER_DOWNLOADS_NAME:-Downloads}"
@@ -169,10 +178,19 @@ function vm_resolve_prl_defaults() {
 	PRL_SHARE_GUEST_FOLDERS="${PRL_SHARE_GUEST_FOLDERS:-off}"
 	PRL_SHARED_CLIPBOARD="${PRL_SHARED_CLIPBOARD:-on}"
 	PRL_TIME_SYNC="${PRL_TIME_SYNC:-on}"
+	PRL_HDD_ONLINE_COMPACT="${PRL_HDD_ONLINE_COMPACT:-on}"
+	PRL_SHARED_CLOUD="${PRL_SHARED_CLOUD:-off}"
 	PRL_SOUND="${PRL_SOUND:-off}"
 	PRL_MICROPHONE="${PRL_MICROPHONE:-off}"
 	PRL_AUTO_SHARE_CAMERA="${PRL_AUTO_SHARE_CAMERA:-off}"
 	PRL_FULL_SCREEN_USE_ALL_DISPLAYS="${PRL_FULL_SCREEN_USE_ALL_DISPLAYS:-off}"
+	PRL_COHERENCE_AUTO_SWITCH_FULLSCREEN="${PRL_COHERENCE_AUTO_SWITCH_FULLSCREEN:-off}"
+	PRL_SHOW_GUEST_NOTIFICATIONS="${PRL_SHOW_GUEST_NOTIFICATIONS:-off}"
+	PRL_SHOW_GUEST_APP_FOLDER_IN_DOCK="${PRL_SHOW_GUEST_APP_FOLDER_IN_DOCK:-off}"
+	PRL_BOUNCE_DOCK_ICON_WHEN_APP_FLASHES="${PRL_BOUNCE_DOCK_ICON_WHEN_APP_FLASHES:-off}"
+	PRL_SH_APP_HOST_TO_GUEST="${PRL_SH_APP_HOST_TO_GUEST:-off}"
+	PRL_SH_APP_GUEST_TO_HOST="${PRL_SH_APP_GUEST_TO_HOST:-off}"
+	PRL_WINSYSTRAY_IN_MACMENU="${PRL_WINSYSTRAY_IN_MACMENU:-off}"
 	PRL_PICTURE_IN_PICTURE="${PRL_PICTURE_IN_PICTURE:-off}"
 	PRL_TRAVEL_MODE_ENTER="${PRL_TRAVEL_MODE_ENTER:-never}"
 	PRL_TRAVEL_MODE_QUIT="${PRL_TRAVEL_MODE_QUIT:-never}"
@@ -263,8 +281,118 @@ function vm_parse_args() {
 }
 
 function vm_ensure_dirs() {
-	mkdir -p "${VM_CACHE_DIR}" "${VM_IMAGE_DIR}" "${VM_SEED_DIR}" "${VM_PARALLELS_DIR}" \
+	mkdir -p "${VM_CACHE_DIR}" "${VM_IMAGE_DIR}" "${VM_CONVERTED_DIR}" "${VM_SEED_DIR}" "${VM_PARALLELS_DIR}" \
 		|| vm_fatal "Failed to create cache directories"
+}
+
+function vm_image_stem() {
+	local name="${VM_IMAGE_NAME}"
+
+	name="${name%.qcow2}"
+	printf "%s\n" "${name}"
+}
+
+function vm_select_latest_match() {
+	if [ "$#" -eq 0 ]; then
+		return 1
+	fi
+
+	printf "%s\n" "$@" | sort -V | tail -n1
+}
+
+function vm_find_local_image_name() {
+	find "${VM_IMAGE_DIR}" -maxdepth 1 -type f -name "Fedora-Cloud-Base-Generic-*.${VM_ARCH}.qcow2" -print 2>/dev/null | \
+		awk -F/ '{print $NF}' | sort -V | tail -n1
+}
+
+function vm_find_local_checksum_name() {
+	find "${VM_IMAGE_DIR}" -maxdepth 1 -type f -name "Fedora-Cloud-*-CHECKSUM" -print 2>/dev/null | \
+		awk -F/ '{print $NF}' | sort -V | tail -n1
+}
+
+function vm_fetch_image_index() {
+	vm_require_cmd curl
+	curl --fail --location --silent --show-error "${VM_IMAGE_ARTIFACTS_URL}" \
+		|| vm_fatal "Failed to fetch image index: ${VM_IMAGE_ARTIFACTS_URL}"
+}
+
+function vm_resolve_remote_image_name() {
+	local index_html
+
+	index_html="$(vm_fetch_image_index)" || exit 1
+	printf "%s\n" "${index_html}" | grep -Eo "Fedora-Cloud-Base-Generic-[0-9][^\"']*\.${VM_ARCH}\.qcow2" | \
+		sort -V | tail -n1
+}
+
+function vm_resolve_remote_checksum_name() {
+	local index_html
+
+	index_html="$(vm_fetch_image_index)" || exit 1
+	printf "%s\n" "${index_html}" | grep -Eo "Fedora-Cloud-[^\"']*-CHECKSUM" | \
+		sort -V | tail -n1
+}
+
+function vm_resolve_image_artifacts() {
+	if [ -n "${VM_IMAGE_FILE}" ] && [ -n "${VM_IMAGE_NAME}" ] && [ -n "${VM_CHECKSUM_FILE}" ]; then
+		return 0
+	fi
+
+	if [ -n "${VM_IMAGE_URL}" ] && [ -z "${VM_IMAGE_BASEURL}" ]; then
+		VM_IMAGE_NAME="${VM_IMAGE_NAME:-$(basename "${VM_IMAGE_URL}")}"
+		VM_IMAGE_FILE="${VM_IMAGE_FILE:-${VM_IMAGE_DIR}/${VM_IMAGE_NAME}}"
+		return 0
+	fi
+
+	VM_IMAGE_NAME="${VM_IMAGE_NAME:-$(vm_find_local_image_name)}"
+	VM_CHECKSUM_NAME="${VM_CHECKSUM_NAME:-$(vm_find_local_checksum_name)}"
+
+	if [ -z "${VM_IMAGE_NAME}" ]; then
+		VM_IMAGE_NAME="$(vm_resolve_remote_image_name)" || exit 1
+	fi
+
+	if [ -z "${VM_CHECKSUM_NAME}" ]; then
+		VM_CHECKSUM_NAME="$(vm_resolve_remote_checksum_name)" || exit 1
+	fi
+
+	[ -n "${VM_IMAGE_NAME}" ] || vm_fatal "Unable to resolve Fedora qcow2 filename from ${VM_IMAGE_ARTIFACTS_URL}"
+	[ -n "${VM_CHECKSUM_NAME}" ] || vm_fatal "Unable to resolve Fedora CHECKSUM filename from ${VM_IMAGE_ARTIFACTS_URL}"
+
+	VM_IMAGE_URL="${VM_IMAGE_URL:-${VM_IMAGE_ARTIFACTS_URL}${VM_IMAGE_NAME}}"
+	VM_CHECKSUM_URL="${VM_CHECKSUM_URL:-${VM_IMAGE_ARTIFACTS_URL}${VM_CHECKSUM_NAME}}"
+	VM_IMAGE_FILE="${VM_IMAGE_FILE:-${VM_IMAGE_DIR}/${VM_IMAGE_NAME}}"
+	VM_CHECKSUM_FILE="${VM_CHECKSUM_FILE:-${VM_IMAGE_DIR}/${VM_CHECKSUM_NAME}}"
+}
+
+function vm_extract_checksum() {
+	local checksum_file="${1}"
+	local image_name="${2}"
+
+	awk -v image_name="${image_name}" '
+		index($0, image_name) {
+			for (i = 1; i <= NF; i++) {
+				if ($i ~ /^[A-Fa-f0-9]{64}$/) {
+					print $i
+					exit
+				}
+			}
+		}
+	' "${checksum_file}"
+}
+
+function vm_verify_downloaded_image() {
+	local expected actual
+
+	vm_require_cmd shasum
+	[ -r "${VM_CHECKSUM_FILE}" ] || vm_fatal "Checksum file not found: ${VM_CHECKSUM_FILE}"
+	[ -r "${VM_IMAGE_FILE}" ] || vm_fatal "Image file not found: ${VM_IMAGE_FILE}"
+
+	expected="$(vm_extract_checksum "${VM_CHECKSUM_FILE}" "${VM_IMAGE_NAME}")"
+	[ -n "${expected}" ] || vm_fatal "Unable to find checksum for ${VM_IMAGE_NAME} in ${VM_CHECKSUM_FILE}"
+
+	actual="$(shasum -a 256 "${VM_IMAGE_FILE}" | awk '{print $1}')"
+	[ "${actual}" = "${expected}" ] || vm_fatal "Checksum mismatch for ${VM_IMAGE_NAME}"
+
+	vm_info "Checksum verified for ${VM_IMAGE_NAME}"
 }
 
 function vm_read_ssh_key() {
@@ -280,19 +408,129 @@ function vm_read_ssh_key() {
 function vm_download_image() {
 	vm_require_cmd curl
 	vm_ensure_dirs
+	vm_resolve_image_artifacts
 
-	if [ -f "${VM_IMAGE_FILE}" ]; then
+	if [ -f "${VM_IMAGE_FILE}" ] && [ -f "${VM_CHECKSUM_FILE}" ]; then
+		vm_verify_downloaded_image
 		echo "Image already present: ${VM_IMAGE_FILE}"
 		return 0
 	fi
 
 	echo "Downloading Fedora cloud image ..."
-	echo "URL: ${VM_IMAGE_URL}"
+	echo "Image URL: ${VM_IMAGE_URL}"
+	echo "Checksum URL: ${VM_CHECKSUM_URL}"
 
 	vm_run curl --fail --location --silent --show-error "${VM_IMAGE_URL}" -o "${VM_IMAGE_FILE}" \
 		|| vm_fatal "Download failed: ${VM_IMAGE_URL}"
+	vm_run curl --fail --location --silent --show-error "${VM_CHECKSUM_URL}" -o "${VM_CHECKSUM_FILE}" \
+		|| vm_fatal "Download failed: ${VM_CHECKSUM_URL}"
+
+	[ "${VM_DRY_RUN}" = "1" ] || vm_verify_downloaded_image
 
 	echo "Saved: ${VM_IMAGE_FILE}"
+}
+
+function vm_hdd_payload_file() {
+	local hdd_dir="${1}"
+
+	find "${hdd_dir}" -maxdepth 1 -type f -name "*.hds" -print | sort | head -n1
+}
+
+function vm_prepare_boot_disk_paths() {
+	local image_stem disk_suffix
+
+	vm_resolve_image_artifacts
+	image_stem="$(vm_image_stem)"
+	disk_suffix="${image_stem}-${VM_DISK_GB}g"
+
+	VM_IMPORT_QCOW2_FILE="${VM_IMPORT_QCOW2_FILE:-${VM_CONVERTED_DIR}/${disk_suffix}.qcow2}"
+	VM_IMPORT_RAW_FILE="${VM_IMPORT_RAW_FILE:-${VM_CONVERTED_DIR}/${disk_suffix}.raw}"
+	VM_IMPORT_HDS_FILE="${VM_IMPORT_HDS_FILE:-${VM_CONVERTED_DIR}/${disk_suffix}.hds}"
+	VM_BOOT_IMAGE_FILE="${VM_BOOT_IMAGE_FILE:-${VM_CONVERTED_DIR}/${disk_suffix}.hdd}"
+	VM_BOOT_IMAGE_CHECKSUM_FILE="${VM_BOOT_IMAGE_CHECKSUM_FILE:-${VM_CONVERTED_DIR}/${disk_suffix}.sha256}"
+}
+
+function vm_cleanup_import_intermediates() {
+	rm -f "${VM_IMPORT_QCOW2_FILE}" "${VM_IMPORT_RAW_FILE}" "${VM_IMPORT_HDS_FILE}"
+}
+
+function vm_write_boot_disk_checksum() {
+	(
+		cd "${VM_BOOT_IMAGE_FILE}" || exit 1
+		find . -maxdepth 1 -type f -print | sort | while IFS= read -r file; do
+			shasum -a 256 "${file#./}"
+		done > "${VM_BOOT_IMAGE_CHECKSUM_FILE}"
+	) || vm_fatal "Failed to write boot disk checksum: ${VM_BOOT_IMAGE_CHECKSUM_FILE}"
+}
+
+function vm_verify_boot_disk_checksum() {
+	[ -d "${VM_BOOT_IMAGE_FILE}" ] || return 1
+	[ -f "${VM_BOOT_IMAGE_CHECKSUM_FILE}" ] || return 1
+
+	(
+		cd "${VM_BOOT_IMAGE_FILE}" || exit 1
+		shasum -a 256 -c "${VM_BOOT_IMAGE_CHECKSUM_FILE}"
+	) 1>/dev/null 2>&1
+}
+
+function vm_prepare_boot_disk() {
+	local payload_file
+	local disk_size="${VM_DISK_GB}G"
+
+	vm_require_cmd qemu-img
+	vm_require_cmd cp
+	vm_require_cmd rm
+	vm_require_cmd find
+	vm_require_cmd prlctl
+	vm_ensure_dirs
+	vm_resolve_image_artifacts
+	vm_prepare_boot_disk_paths
+
+	if [ -d "${VM_BOOT_IMAGE_FILE}" ]; then
+		if vm_verify_boot_disk_checksum; then
+			vm_info "Verified cached Parallels boot disk: ${VM_BOOT_IMAGE_FILE}"
+			return 0
+		fi
+
+		echo "Cached Parallels boot disk failed checksum verification; rebuilding."
+		[ "${VM_DRY_RUN}" = "1" ] || rm -rf "${VM_BOOT_IMAGE_FILE}" "${VM_BOOT_IMAGE_CHECKSUM_FILE}"
+	fi
+
+	if [ ! -f "${VM_IMAGE_FILE}" ]; then
+		vm_download_image
+	fi
+
+	echo "Preparing Parallels boot disk ..."
+	echo "Source image: ${VM_IMAGE_FILE}"
+	echo "Disk size:    ${disk_size}"
+	echo "Target disk:  ${VM_BOOT_IMAGE_FILE}"
+
+	vm_run cp "${VM_IMAGE_FILE}" "${VM_IMPORT_QCOW2_FILE}" \
+		|| vm_fatal "Failed to stage qcow2 for import: ${VM_IMPORT_QCOW2_FILE}"
+	vm_run qemu-img resize -f qcow2 "${VM_IMPORT_QCOW2_FILE}" "${disk_size}" \
+		|| vm_fatal "Failed to resize qcow2 image: ${VM_IMPORT_QCOW2_FILE}"
+	vm_run qemu-img convert -f qcow2 -O raw "${VM_IMPORT_QCOW2_FILE}" "${VM_IMPORT_RAW_FILE}" \
+		|| vm_fatal "Failed to convert qcow2 to raw: ${VM_IMPORT_RAW_FILE}"
+	vm_run qemu-img convert -f raw -O parallels "${VM_IMPORT_RAW_FILE}" "${VM_IMPORT_HDS_FILE}" \
+		|| vm_fatal "Failed to convert raw image to Parallels payload: ${VM_IMPORT_HDS_FILE}"
+
+	[ "${VM_DRY_RUN}" = "1" ] || rm -rf "${VM_BOOT_IMAGE_FILE}"
+	vm_run "/Applications/Parallels Desktop.app/Contents/MacOS/prl_disk_tool" create \
+		--hdd "${VM_BOOT_IMAGE_FILE}" \
+		--size "${disk_size}" \
+		--expanding \
+		|| vm_fatal "Failed to create Parallels disk package: ${VM_BOOT_IMAGE_FILE}"
+
+	payload_file="$(vm_hdd_payload_file "${VM_BOOT_IMAGE_FILE}")"
+	[ -n "${payload_file}" ] || vm_fatal "Failed to locate payload file in ${VM_BOOT_IMAGE_FILE}"
+
+	vm_run cp "${VM_IMPORT_HDS_FILE}" "${payload_file}" \
+		|| vm_fatal "Failed to populate Parallels disk payload: ${payload_file}"
+
+	[ "${VM_DRY_RUN}" = "1" ] || vm_write_boot_disk_checksum
+	[ "${VM_DRY_RUN}" = "1" ] || vm_cleanup_import_intermediates
+
+	echo "Prepared Parallels boot disk: ${VM_BOOT_IMAGE_FILE}"
 }
 
 function vm_render_keyboard_block() {
@@ -400,6 +638,14 @@ function vm_exists() {
 	vm_prl_list_names | awk 'NR > 1 {print}' | grep -Fx "${VM_NAME}" 1>/dev/null 2>&1
 }
 
+function vm_existing_home_path() {
+	local prlctl
+
+	prlctl="$(vm_parallels_bin)"
+	[ -x "${prlctl}" ] || vm_fatal "Parallels CLI not found: ${prlctl}"
+	"${prlctl}" list --info "${VM_NAME}" 2>/dev/null | awk -F': ' '/^Home path:/ {print $2; exit}'
+}
+
 function vm_prl_set() {
 	local prlctl="${1}"
 	shift
@@ -439,15 +685,28 @@ function vm_apply_prl_config() {
 	vm_prl_set "${prlctl}" \
 		--autostart "${PRL_AUTOSTART}" \
 		--autostop "${PRL_AUTOSTOP}" \
+		--startup-view "${PRL_STARTUP_VIEW}" \
+		--on-shutdown "${PRL_ON_SHUTDOWN}" \
+		--on-window-close "${PRL_ON_WINDOW_CLOSE}" \
 		--pause-idle "${PRL_PAUSE_IDLE}" \
 		--adaptive-hypervisor "${PRL_ADAPTIVE_HYPERVISOR}" \
 		--shared-profile "${PRL_SHARED_PROFILE}" \
 		--smart-mount "${PRL_SMART_MOUNT}" \
 		--shf-host "${PRL_SHARE_HOST_FOLDERS}" \
+		--shf-host-automount "${PRL_SHARE_HOST_FOLDERS_AUTOMOUNT}" \
 		--shf-host-defined "${PRL_SHARE_HOST_FOLDERS_DEFINED}" \
 		--shf-guest "${PRL_SHARE_GUEST_FOLDERS}" \
+		--fullscreen-use-all-displays "${PRL_FULL_SCREEN_USE_ALL_DISPLAYS}" \
+		--auto-switch-fullscreen "${PRL_COHERENCE_AUTO_SWITCH_FULLSCREEN}" \
+		--show-guest-notifications "${PRL_SHOW_GUEST_NOTIFICATIONS}" \
+		--show-guest-app-folder-in-dock "${PRL_SHOW_GUEST_APP_FOLDER_IN_DOCK}" \
+		--bounce-dock-icon-when-app-flashes "${PRL_BOUNCE_DOCK_ICON_WHEN_APP_FLASHES}" \
+		--sh-app-host-to-guest "${PRL_SH_APP_HOST_TO_GUEST}" \
+		--sh-app-guest-to-host "${PRL_SH_APP_GUEST_TO_HOST}" \
+		--winsystray-in-macmenu "${PRL_WINSYSTRAY_IN_MACMENU}" \
 		--shared-clipboard "${PRL_SHARED_CLIPBOARD}" \
 		--time-sync "${PRL_TIME_SYNC}" \
+		--shared-cloud "${PRL_SHARED_CLOUD}" \
 		--auto-share-camera "${PRL_AUTO_SHARE_CAMERA}"
 
 	if [ "${HOST_ARCH}" = "x86_64" ]; then
@@ -459,9 +718,9 @@ function vm_apply_prl_config() {
 
 	if [ "${PRL_SOUND}" = "off" ] && [ "${PRL_MICROPHONE}" = "off" ]; then
 		if [ "${VM_DRY_RUN}" = "1" ]; then
-			vm_run "${prlctl}" set "${VM_NAME}" --device-del sound
+			vm_run "${prlctl}" set "${VM_NAME}" --device-del sound0
 			sound_status="Would remove VM sound device to disable sound output and microphone."
-		elif "${prlctl}" set "${VM_NAME}" --device-del sound 1>/dev/null 2>&1; then
+		elif "${prlctl}" set "${VM_NAME}" --device-del sound0 1>/dev/null 2>&1; then
 			sound_status="Removed VM sound device to disable sound output and microphone."
 		else
 			sound_status="Unable to remove sound device automatically; GUI check may still be needed."
@@ -495,7 +754,6 @@ Applied Parallels CLI-backed settings for ${VM_NAME}.
   ${sound_status}
 
 Not applied from CLI yet and may require GUI verification:
-  Full screen use all displays: ${PRL_FULL_SCREEN_USE_ALL_DISPLAYS}
   Picture in Picture:          ${PRL_PICTURE_IN_PICTURE}
   Travel mode enter:           ${PRL_TRAVEL_MODE_ENTER}
   Travel mode quit:            ${PRL_TRAVEL_MODE_QUIT}
@@ -505,12 +763,31 @@ __EOF__
 
 function vm_create_vm_shell() {
 	local prlctl="${1}"
+	local existing_home
 
 	vm_run mkdir -p "${VM_PARALLELS_DIR}" || vm_fatal "Failed to create Parallels directory"
 
 	if [ "${VM_DRY_RUN}" != "1" ] && vm_exists; then
-		vm_info "VM already exists in Parallels: ${VM_NAME}"
-		return 0
+		existing_home="$(vm_existing_home_path)"
+
+		if [ "${VM_RECREATE}" = "1" ]; then
+			vm_info "Recreating existing VM: ${VM_NAME}"
+			vm_destroy
+		else
+			cat <<__EOF__
+VM already exists in Parallels: ${VM_NAME}
+Existing home path: ${existing_home}
+Expected home path: ${VM_BUNDLE_PATH}/config.pvs
+
+Refusing to reuse an existing registration automatically because stale device
+state can cause misleading 'invalid image' errors.
+
+Use one of:
+  VM_RECREATE=1 ./build_vm.sh --target ${VM_TARGET} create
+  ./build_vm.sh --target ${VM_TARGET} destroy
+__EOF__
+			exit 1
+		fi
 	fi
 
 	vm_run "${prlctl}" create "${VM_NAME}" --distribution "${VM_PRL_DISTRIBUTION}" --dst "${VM_PARALLELS_DIR}" \
@@ -520,9 +797,10 @@ function vm_create_vm_shell() {
 function vm_attach_boot_media() {
 	local prlctl="${1}"
 
+	vm_prepare_boot_disk_paths
 	vm_prl_set "${prlctl}" --cpus "${VM_CPUS}" --memsize "${VM_MEMORY_MB}" --efi-boot on
 	vm_prl_set "${prlctl}" --device-set net0 --type shared --adapter-type virtio
-	vm_prl_set "${prlctl}" --device-set hdd0 --image "${VM_IMAGE_FILE}"
+	vm_prl_set "${prlctl}" --device-set hdd0 --image "${VM_BOOT_IMAGE_FILE}" --online-compact "${PRL_HDD_ONLINE_COMPACT}"
 	vm_prl_set "${prlctl}" --device-set cdrom0 --image "${VM_SEED_ISO}" --connect
 }
 
@@ -531,8 +809,11 @@ function vm_create() {
 
 	prlctl="$(vm_parallels_bin)"
 	[ -x "${prlctl}" ] || vm_fatal "Parallels CLI not found: ${prlctl}"
+	vm_resolve_image_artifacts
+	vm_prepare_boot_disk_paths
 	if [ "${VM_DRY_RUN}" != "1" ]; then
 		[ -f "${VM_IMAGE_FILE}" ] || vm_fatal "Cloud image not found: ${VM_IMAGE_FILE}"
+		[ -d "${VM_BOOT_IMAGE_FILE}" ] || vm_prepare_boot_disk
 		[ -f "${VM_SEED_ISO}" ] || vm_fatal "Seed ISO not found: ${VM_SEED_ISO}"
 	fi
 	vm_create_vm_shell "${prlctl}"
@@ -548,6 +829,7 @@ VM prepared: ${VM_NAME}
   CPUs:        ${VM_CPUS}
   RAM (MB):    ${VM_MEMORY_MB}
   Image file:  ${VM_IMAGE_FILE}
+  Boot disk:   ${VM_BOOT_IMAGE_FILE}
   Seed ISO:    ${VM_SEED_ISO}
   VM bundle:   ${VM_BUNDLE_PATH}
 __EOF__
