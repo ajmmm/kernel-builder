@@ -1,0 +1,67 @@
+#cloud-config
+hostname: __VM_HOSTNAME__
+fqdn: __VM_FQDN__
+
+timezone: __VM_TIMEZONE__
+locale: en_GB.UTF-8
+__VM_KEYBOARD_BLOCK__
+
+users:
+  - default
+  - name: __VM_USERNAME__
+    gecos: Image Builder User
+    groups: [wheel]
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    ssh_authorized_keys:
+      - __VM_SSH_PUBLIC_KEY__
+
+# The builder VM should come up quickly and predictably. Keep package updates
+# disabled by default and let callers opt in if they really want them.
+package_update: __VM_PACKAGE_UPGRADE__
+package_upgrade: __VM_PACKAGE_UPGRADE__
+package_reboot_if_required: __VM_PACKAGE_REBOOT_IF_REQUIRED__
+
+write_files:
+  - path: /etc/vconsole.conf
+    permissions: "0644"
+    content: |
+      KEYMAP=__VM_KEYBOARD_VC_KEYMAP__
+  - path: /etc/chrony.d/10-builder.conf
+    permissions: "0644"
+    content: |
+      makestep __VM_CHRONY_MAKESTEP__
+  - path: /etc/profile.d/ssh-agent.sh
+    permissions: "0644"
+    content: |
+      # Start a per-user ssh-agent for interactive shell logins.
+      [ -n "${PS1:-}" ] || return 0
+      [ -n "${SSH_AUTH_SOCK:-}" ] && [ -S "${SSH_AUTH_SOCK}" ] && return 0
+      agent_env="${XDG_RUNTIME_DIR:-/tmp}/ssh-agent-${USER}.env"
+      if [ -r "${agent_env}" ]; then
+        . "${agent_env}" >/dev/null 2>&1 || true
+      fi
+      if [ -n "${SSH_AUTH_SOCK:-}" ] && [ -S "${SSH_AUTH_SOCK}" ] && kill -0 "${SSH_AGENT_PID:-0}" 2>/dev/null; then
+        export SSH_AUTH_SOCK SSH_AGENT_PID
+        return 0
+      fi
+      eval "$(ssh-agent -s)" >/dev/null
+      umask 077
+      {
+        printf 'export SSH_AUTH_SOCK=%q\n' "${SSH_AUTH_SOCK}"
+        printf 'export SSH_AGENT_PID=%q\n' "${SSH_AGENT_PID}"
+      } > "${agent_env}"
+__VM_NMCONNECTION_FILES__
+
+bootcmd:
+  - [ ssh-keygen, -A ]
+  - [ systemctl, enable, --now, sshd ]
+
+runcmd:
+__VM_NMCLI_APPLY_CMDS__
+  - [ localectl, set-keymap, __VM_KEYBOARD_VC_KEYMAP__ ]
+__VM_LOCALectl_X11_CMD__
+__VM_FIREWALLD_RUNCMD__
+  - [ sh, -c, "ln -sfn /media/psf/Downloads /Downloads" ]
+  - [ sh, -c, "ln -sfn /media/psf/Develop /Develop" ]
+__VM_COMMON_SERVICE_RUNCMD__

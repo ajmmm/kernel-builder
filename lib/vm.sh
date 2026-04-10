@@ -78,8 +78,14 @@ function vm_run() {
 	"$@"
 }
 
+function vm_prlctl_output_has_error() {
+	local output_file="${1}"
+
+	grep -Eq '^(Login failed:|Failed to |Unable to perform the action because )' "${output_file}"
+}
+
 function vm_run_quiet() {
-	local output_file rc
+	local output_file rc cmd_name
 
 	if [ "${VM_DRY_RUN}" = "1" ] || [ "${VM_VERBOSE}" = "1" ]; then
 		vm_run "$@"
@@ -87,8 +93,14 @@ function vm_run_quiet() {
 	fi
 
 	output_file="$(mktemp "${TMPDIR:-/tmp}/builder-cmd.XXXXXX")" || vm_fatal "Failed to create temp file"
+	cmd_name="$(basename "$1")"
 
 	if "$@" >"${output_file}" 2>&1; then
+		if [ "${cmd_name}" = "prlctl" ] && vm_prlctl_output_has_error "${output_file}"; then
+			cat "${output_file}" >&2
+			rm -f "${output_file}"
+			return 1
+		fi
 		rm -f "${output_file}"
 		return 0
 	fi
@@ -100,7 +112,7 @@ function vm_run_quiet() {
 }
 
 function vm_try_quiet() {
-	local output_file rc
+	local output_file rc cmd_name
 
 	if [ "${VM_DRY_RUN}" = "1" ] || [ "${VM_VERBOSE}" = "1" ]; then
 		vm_run "$@"
@@ -108,8 +120,13 @@ function vm_try_quiet() {
 	fi
 
 	output_file="$(mktemp "${TMPDIR:-/tmp}/builder-cmd.XXXXXX")" || vm_fatal "Failed to create temp file"
+	cmd_name="$(basename "$1")"
 
 	if "$@" >"${output_file}" 2>&1; then
+		if [ "${cmd_name}" = "prlctl" ] && vm_prlctl_output_has_error "${output_file}"; then
+			rm -f "${output_file}"
+			return 1
+		fi
 		rm -f "${output_file}"
 		return 0
 	fi
@@ -259,6 +276,11 @@ function vm_resolve_vm_defaults() {
 	VM_CHRONY_MAKESTEP="${VM_CHRONY_MAKESTEP:-1.0 3}"
 	VM_PACKAGE_UPGRADE="${VM_PACKAGE_UPGRADE:-true}"
 	VM_PACKAGE_REBOOT_IF_REQUIRED="${VM_PACKAGE_REBOOT_IF_REQUIRED:-true}"
+	[ -n "${VM_BOOT_PARTITION_GB+x}" ] || VM_BOOT_PARTITION_GB="8"
+	VM_IMAGE_PREP_TARGET="${VM_IMAGE_PREP_TARGET:-fc43/vm-builder}"
+	VM_KEEP_BUILDER="${VM_KEEP_BUILDER:-0}"
+	VM_BOOT_PARTITION_DEVICE="${VM_BOOT_PARTITION_DEVICE:-/dev/sda2}"
+	VM_ROOT_PARTITION_DEVICE="${VM_ROOT_PARTITION_DEVICE:-/dev/sda3}"
 	VM_WAIT_FOR_UPGRADE="${VM_WAIT_FOR_UPGRADE:-0}"
 	VM_DISABLE_FIREWALLD="${VM_DISABLE_FIREWALLD:-true}"
 	VM_PRL_DISTRIBUTION="${VM_PRL_DISTRIBUTION:-linux}"
@@ -280,14 +302,19 @@ function vm_resolve_vm_defaults() {
 		arch_url_var="$(vm_arch_url_var_name)"
 		VM_IMAGE_ARTIFACTS_URL="${!arch_url_var:-${VM_IMAGE_ARTIFACTS_URL:-}}"
 	fi
-	[ -n "${VM_IMAGE_ARTIFACTS_URL}" ] || vm_fatal "VM_IMAGE_ARTIFACTS_URL is not set for ${VM_TARGET} (${VM_ARCH})"
-	[ -n "${VM_IMAGE_NAME_REGEX}" ] || vm_fatal "VM_IMAGE_NAME_REGEX is not set for ${VM_TARGET}"
-	[ -n "${VM_CHECKSUM_NAME_REGEX}" ] || vm_fatal "VM_CHECKSUM_NAME_REGEX is not set for ${VM_TARGET}"
+	if [ -n "${VM_IMAGE_FILE:-}" ]; then
+		VM_IMAGE_NAME="${VM_IMAGE_NAME:-$(basename "${VM_IMAGE_FILE}")}"
+	else
+		[ -n "${VM_IMAGE_ARTIFACTS_URL}" ] || vm_fatal "VM_IMAGE_ARTIFACTS_URL is not set for ${VM_TARGET} (${VM_ARCH})"
+		[ -n "${VM_IMAGE_NAME_REGEX}" ] || vm_fatal "VM_IMAGE_NAME_REGEX is not set for ${VM_TARGET}"
+		[ -n "${VM_CHECKSUM_NAME_REGEX}" ] || vm_fatal "VM_CHECKSUM_NAME_REGEX is not set for ${VM_TARGET}"
+	fi
 	VM_SEED_ISO="${VM_SEED_ISO:-${VM_SEED_DIR}/seed.iso}"
 	VM_INSTANCE_ID="${VM_INSTANCE_ID:-${VM_NAME}-01}"
 	VM_SSH_KEY_PATH="${VM_SSH_KEY_PATH:-${HOME}/.ssh/id_rsa.pub}"
 	VM_SSH_HOST_ALIAS="${VM_SSH_HOST_ALIAS:-${VM_NAME}}"
 	VM_SSH_HOSTNAME="${VM_SSH_HOSTNAME:-${VM_NET_0_IPV4_ADDRESS%%/*}}"
+	VM_INSTALL_SSH_CONFIG="${VM_INSTALL_SSH_CONFIG:-true}"
 	VM_SSH_CONFIG_DIR="${VM_SSH_CONFIG_DIR:-${VM_CACHE_DIR}/ssh-config.d}"
 	VM_SSH_CONFIG_BASENAME="${VM_SSH_CONFIG_BASENAME:-${VM_SSH_HOST_ALIAS}.conf}"
 	VM_SSH_CONFIG_PATH="${VM_SSH_CONFIG_PATH:-${VM_SSH_CONFIG_DIR}/${VM_SSH_CONFIG_BASENAME}}"
@@ -295,6 +322,7 @@ function vm_resolve_vm_defaults() {
 	VM_SSH_KNOWN_HOSTS_PATH="${VM_SSH_KNOWN_HOSTS_PATH:-${VM_SSH_CONFIG_DIR}/${VM_SSH_KNOWN_HOSTS_BASENAME}}"
 	VM_INSTANCE_STATE_PATH="${VM_INSTANCE_STATE_PATH:-${VM_INSTANCE_DIR}/${VM_NAME}.env}"
 	VM_CONVERTED_DIR="${VM_CONVERTED_DIR:-${VM_IMAGE_DIR}/converted}"
+	VM_IMAGE_SOURCE_FORMAT="${VM_IMAGE_SOURCE_FORMAT:-qcow2}"
 	VM_RECREATE="${VM_RECREATE:-0}"
 }
 
@@ -521,7 +549,11 @@ function vm_resolve_remote_checksum_name() {
 }
 
 function vm_resolve_image_artifacts() {
-	if [ -n "${VM_IMAGE_FILE}" ] && [ -n "${VM_IMAGE_NAME}" ] && [ -n "${VM_CHECKSUM_FILE}" ]; then
+	if [ -n "${VM_IMAGE_FILE:-}" ] && [ -n "${VM_IMAGE_NAME:-}" ] && { [ -n "${VM_CHECKSUM_FILE:-}" ] || [ ! -n "${VM_IMAGE_ARTIFACTS_URL:-}" ]; }; then
+		return 0
+	fi
+
+	if [ -n "${VM_IMAGE_FILE:-}" ] && [ -n "${VM_IMAGE_NAME:-}" ]; then
 		return 0
 	fi
 
@@ -599,6 +631,11 @@ function vm_download_image() {
 	vm_step "Resolving VM image artifacts"
 	vm_resolve_image_artifacts
 
+	if [ -f "${VM_IMAGE_FILE}" ] && [ -z "${VM_CHECKSUM_FILE:-}" ]; then
+		echo "Image already present: ${VM_IMAGE_FILE}"
+		return 0
+	fi
+
 	if [ -f "${VM_IMAGE_FILE}" ] && [ -f "${VM_CHECKSUM_FILE}" ]; then
 		vm_verify_downloaded_image
 		echo "Image already present: ${VM_IMAGE_FILE}"
@@ -644,6 +681,24 @@ function vm_cleanup_import_intermediates() {
 	rm -f "${VM_IMPORT_QCOW2_FILE}" "${VM_IMPORT_RAW_FILE}" "${VM_IMPORT_HDS_FILE}"
 }
 
+function vm_expand_boot_image_archive() {
+	[ -n "${VM_BOOT_IMAGE_ARCHIVE:-}" ] || return 1
+	[ -f "${VM_BOOT_IMAGE_ARCHIVE}" ] || return 1
+
+	vm_require_cmd tar
+	vm_require_cmd zstd
+	vm_ensure_dirs
+
+	vm_step "Expanding cached boot disk archive"
+	vm_run rm -rf "${VM_BOOT_IMAGE_FILE}" "${VM_BOOT_IMAGE_CHECKSUM_FILE}" "${VM_BOOT_IMAGE_METADATA_FILE}" \
+		|| vm_fatal "Failed to clear stale boot disk artifacts before archive expansion"
+
+	(
+		cd "${VM_CONVERTED_DIR}" || exit 1
+		zstd -dc "${VM_BOOT_IMAGE_ARCHIVE}" | tar -xf -
+	) || vm_fatal "Failed to expand boot disk archive: ${VM_BOOT_IMAGE_ARCHIVE}"
+}
+
 function vm_write_boot_disk_checksum() {
 	(
 		cd "${VM_BOOT_IMAGE_FILE}" || exit 1
@@ -655,10 +710,11 @@ function vm_write_boot_disk_checksum() {
 
 function vm_write_boot_disk_metadata() {
 	cat >"${VM_BOOT_IMAGE_METADATA_FILE}" <<__EOF__ || vm_fatal "Failed to write boot disk metadata: ${VM_BOOT_IMAGE_METADATA_FILE}"
-BOOT_IMAGE_FORMAT_VERSION=2
+BOOT_IMAGE_FORMAT_VERSION=4
 BOOT_IMAGE_NAME=${VM_IMAGE_NAME}
 BOOT_DISK_GB=${VM_DISK_GB}
 BOOT_VM_ARCH=${VM_ARCH}
+BOOT_PARTITION_GB=${VM_BOOT_PARTITION_GB}
 __EOF__
 }
 
@@ -669,6 +725,7 @@ function vm_verify_boot_disk_metadata() {
 	local metadata_image_name=""
 	local metadata_disk_gb=""
 	local metadata_arch=""
+	local metadata_boot_partition_gb=""
 
 	# shellcheck disable=SC1090
 	. "${VM_BOOT_IMAGE_METADATA_FILE}" || return 1
@@ -677,11 +734,13 @@ function vm_verify_boot_disk_metadata() {
 	metadata_image_name="${BOOT_IMAGE_NAME:-}"
 	metadata_disk_gb="${BOOT_DISK_GB:-}"
 	metadata_arch="${BOOT_VM_ARCH:-}"
+	metadata_boot_partition_gb="${BOOT_PARTITION_GB:-}"
 
-	[ "${metadata_version}" = "2" ] || return 1
+	[ "${metadata_version}" = "4" ] || return 1
 	[ "${metadata_image_name}" = "${VM_IMAGE_NAME}" ] || return 1
 	[ "${metadata_disk_gb}" = "${VM_DISK_GB}" ] || return 1
 	[ "${metadata_arch}" = "${VM_ARCH}" ] || return 1
+	[ "${metadata_boot_partition_gb}" = "${VM_BOOT_PARTITION_GB}" ] || return 1
 }
 
 function vm_verify_boot_disk_checksum() {
@@ -694,11 +753,215 @@ function vm_verify_boot_disk_checksum() {
 	) 1>/dev/null 2>&1
 }
 
+function vm_needs_image_builder() {
+	[ -n "${VM_BOOT_PARTITION_GB}" ]
+}
+
+function vm_random_suffix() {
+	LC_ALL=C tr -dc 'a-z0-9' </dev/urandom | head -c 6
+}
+
+function vm_builder_instance_name() {
+	printf "builder-%s\n" "$(vm_random_suffix)"
+}
+
+function vm_builder_known_hosts_path() {
+	local instance_name="${1}"
+	printf "%s/%s.known_hosts\n" "${VM_CACHE_DIR}/ssh-config.d" "${instance_name}"
+}
+
+function vm_builder_ssh_args() {
+	local known_hosts_path="${1}"
+	printf "%s\n" \
+		"-F" "/dev/null" \
+		"-o" "BatchMode=yes" \
+		"-o" "StrictHostKeyChecking=accept-new" \
+		"-o" "UserKnownHostsFile=${known_hosts_path}" \
+		"-o" "ConnectTimeout=5"
+}
+
+function vm_prl_vm_ipv4() {
+	local instance_name="${1}"
+	local prlctl info_json
+
+	prlctl="$(vm_parallels_bin)"
+	info_json="$("${prlctl}" list --info "${instance_name}" --json)" || return 1
+	printf "%s\n" "${info_json}" | jq -r '.[0].Network.ipAddresses[]? | select(.type=="ipv4") | .ip' | head -n1
+}
+
+function vm_wait_for_builder_ssh() {
+	local host_ip="${1}"
+	local known_hosts_path="${2}"
+	local deadline=$((SECONDS + 300))
+	local ssh_args=()
+
+	while IFS= read -r arg; do
+		ssh_args+=("${arg}")
+	done < <(vm_builder_ssh_args "${known_hosts_path}")
+
+	echo "Waiting for builder SSH on ${host_ip}..."
+	while [ "${SECONDS}" -lt "${deadline}" ]; do
+		if ssh "${ssh_args[@]}" "ajm@${host_ip}" true 1>/dev/null 2>&1; then
+			vm_progress_done
+			return 0
+		fi
+		vm_progress_tick
+		sleep 2
+	done
+
+	vm_progress_done
+	return 1
+}
+
+function vm_wait_for_builder_ready() {
+	local host_ip="${1}"
+	local known_hosts_path="${2}"
+	local deadline=$((SECONDS + 1800))
+	local ssh_args=()
+
+	while IFS= read -r arg; do
+		ssh_args+=("${arg}")
+	done < <(vm_builder_ssh_args "${known_hosts_path}")
+
+	echo "Waiting for builder cloud-init to finish on ${host_ip}..."
+	while [ "${SECONDS}" -lt "${deadline}" ]; do
+		if ssh "${ssh_args[@]}" "ajm@${host_ip}" "test -f /var/lib/cloud/instance/devbox-ready" 1>/dev/null 2>&1; then
+			vm_progress_done
+			return 0
+		fi
+		vm_progress_tick
+		sleep 5
+	done
+
+	vm_progress_done
+	return 1
+}
+
+function vm_wait_for_builder_ip() {
+	local instance_name="${1}"
+	local deadline=$((SECONDS + 300))
+	local ip=""
+
+	printf "Waiting for builder IP on %s...\n" "${instance_name}" >&2
+	while [ "${SECONDS}" -lt "${deadline}" ]; do
+		ip="$(vm_prl_vm_ipv4 "${instance_name}")"
+		if [ -n "${ip}" ]; then
+			printf "\n" >&2
+			printf "%s\n" "${ip}"
+			return 0
+		fi
+		printf "." >&2
+		sleep 2
+	done
+
+	printf "\n" >&2
+	return 1
+}
+
+function vm_builder_copy_in() {
+	local host_ip="${1}"
+	local known_hosts_path="${2}"
+	local local_path="${3}"
+	local remote_path="${4}"
+	local scp_args=()
+
+	while IFS= read -r arg; do
+		scp_args+=("${arg}")
+	done < <(vm_builder_ssh_args "${known_hosts_path}")
+
+	vm_run scp "${scp_args[@]}" "${local_path}" "ajm@${host_ip}:${remote_path}" \
+		|| vm_fatal "Failed to copy file into builder VM: ${local_path}"
+}
+
+function vm_builder_copy_out() {
+	local host_ip="${1}"
+	local known_hosts_path="${2}"
+	local remote_path="${3}"
+	local local_path="${4}"
+	local scp_args=()
+
+	while IFS= read -r arg; do
+		scp_args+=("${arg}")
+	done < <(vm_builder_ssh_args "${known_hosts_path}")
+
+	vm_run scp "${scp_args[@]}" "ajm@${host_ip}:${remote_path}" "${local_path}" \
+		|| vm_fatal "Failed to copy file out of builder VM: ${remote_path}"
+}
+
+function vm_builder_run() {
+	local host_ip="${1}"
+	local known_hosts_path="${2}"
+	local remote_cmd="${3}"
+	local ssh_args=()
+
+	while IFS= read -r arg; do
+		ssh_args+=("${arg}")
+	done < <(vm_builder_ssh_args "${known_hosts_path}")
+
+	vm_run ssh "${ssh_args[@]}" "ajm@${host_ip}" "${remote_cmd}" \
+		|| vm_fatal "Builder command failed: ${remote_cmd}"
+}
+
+function vm_cleanup_builder_instance() {
+	local instance_name="${1}"
+
+	[ "${VM_KEEP_BUILDER}" = "1" ] && {
+		vm_info "Keeping builder VM for debugging: ${instance_name}"
+		return 0
+	}
+
+	"${BASEPATH}/build_vm.sh" --target "${VM_IMAGE_PREP_TARGET}" --instance "${instance_name}" kill-destroy 1>/dev/null 2>&1 || true
+}
+
+function vm_prepare_image_with_builder_vm() {
+	local builder_instance builder_known_hosts builder_ip
+	local remote_input="/home/ajm/source.qcow2"
+	local remote_output="/home/ajm/prepared.hds"
+	local remote_script="/home/ajm/prepare-image.sh"
+
+	builder_instance="$(vm_builder_instance_name)"
+	builder_known_hosts="$(vm_builder_known_hosts_path "${builder_instance}")"
+
+	vm_info "Preparing image with ephemeral builder VM: ${builder_instance}"
+
+	if [ "${VM_DRY_RUN}" = "1" ]; then
+		vm_run "${BASEPATH}/build_vm.sh" --target "${VM_IMAGE_PREP_TARGET}" --instance "${builder_instance}" --action seed,create,boot
+		vm_info "Would wait for builder SSH and run image prep inside ${builder_instance}"
+		return 0
+	fi
+
+	"${BASEPATH}/build_vm.sh" --target "${VM_IMAGE_PREP_TARGET}" --instance "${builder_instance}" --action seed,create,boot \
+		|| vm_fatal "Failed to prepare builder VM: ${builder_instance}"
+
+	builder_ip="$(vm_wait_for_builder_ip "${builder_instance}")"
+	[ -n "${builder_ip}" ] || {
+		vm_cleanup_builder_instance "${builder_instance}"
+		vm_fatal "Failed to determine builder VM IP address: ${builder_instance}"
+	}
+
+	vm_wait_for_builder_ssh "${builder_ip}" "${builder_known_hosts}" || {
+		vm_cleanup_builder_instance "${builder_instance}"
+		vm_fatal "Timed out waiting for builder SSH: ${builder_instance}"
+	}
+	vm_wait_for_builder_ready "${builder_ip}" "${builder_known_hosts}" || {
+		vm_cleanup_builder_instance "${builder_instance}"
+		vm_fatal "Timed out waiting for builder cloud-init completion: ${builder_instance}"
+	}
+
+	vm_builder_copy_in "${builder_ip}" "${builder_known_hosts}" "${VM_IMAGE_FILE}" "${remote_input}"
+	vm_builder_copy_in "${builder_ip}" "${builder_known_hosts}" "${BASEPATH}/config/vm-builder/prepare-image.sh" "${remote_script}"
+
+	vm_builder_run "${builder_ip}" "${builder_known_hosts}" \
+		"chmod +x ${remote_script} && sudo ${remote_script} ${remote_input} ${remote_output} ${VM_DISK_GB} ${VM_BOOT_PARTITION_GB} ${VM_BOOT_PARTITION_DEVICE} ${VM_ROOT_PARTITION_DEVICE}"
+
+	vm_builder_copy_out "${builder_ip}" "${builder_known_hosts}" "${remote_output}" "${VM_IMPORT_HDS_FILE}"
+	vm_cleanup_builder_instance "${builder_instance}"
+}
+
 function vm_prepare_boot_disk() {
 	local payload_file
 	local disk_size="${VM_DISK_GB}G"
 
-	vm_require_cmd qemu-img
 	vm_require_cmd cp
 	vm_require_cmd rm
 	vm_require_cmd find
@@ -717,6 +980,17 @@ function vm_prepare_boot_disk() {
 		[ "${VM_DRY_RUN}" = "1" ] || rm -rf "${VM_BOOT_IMAGE_FILE}" "${VM_BOOT_IMAGE_CHECKSUM_FILE}" "${VM_BOOT_IMAGE_METADATA_FILE}"
 	fi
 
+	if [ ! -d "${VM_BOOT_IMAGE_FILE}" ] && [ -n "${VM_BOOT_IMAGE_ARCHIVE:-}" ] && [ -f "${VM_BOOT_IMAGE_ARCHIVE}" ]; then
+		vm_expand_boot_image_archive
+		if vm_verify_boot_disk_metadata && vm_verify_boot_disk_checksum; then
+			vm_info "Restored cached Parallels boot disk from archive: ${VM_BOOT_IMAGE_FILE}"
+			return 0
+		fi
+
+		echo "Expanded boot disk archive failed validation; rebuilding."
+		[ "${VM_DRY_RUN}" = "1" ] || rm -rf "${VM_BOOT_IMAGE_FILE}" "${VM_BOOT_IMAGE_CHECKSUM_FILE}" "${VM_BOOT_IMAGE_METADATA_FILE}"
+	fi
+
 	if [ ! -f "${VM_IMAGE_FILE}" ]; then
 		vm_download_image
 	fi
@@ -726,14 +1000,22 @@ function vm_prepare_boot_disk() {
 	vm_debug "Disk size: ${disk_size}"
 	vm_debug "Target disk: ${VM_BOOT_IMAGE_FILE}"
 
-	vm_run cp "${VM_IMAGE_FILE}" "${VM_IMPORT_QCOW2_FILE}" \
-		|| vm_fatal "Failed to stage qcow2 for import: ${VM_IMPORT_QCOW2_FILE}"
-	vm_run qemu-img resize -f qcow2 "${VM_IMPORT_QCOW2_FILE}" "${disk_size}" \
-		|| vm_fatal "Failed to resize qcow2 image: ${VM_IMPORT_QCOW2_FILE}"
-	vm_run qemu-img convert -f qcow2 -O raw "${VM_IMPORT_QCOW2_FILE}" "${VM_IMPORT_RAW_FILE}" \
-		|| vm_fatal "Failed to convert qcow2 to raw: ${VM_IMPORT_RAW_FILE}"
-	vm_run qemu-img convert -f raw -O parallels "${VM_IMPORT_RAW_FILE}" "${VM_IMPORT_HDS_FILE}" \
-		|| vm_fatal "Failed to convert raw image to Parallels payload: ${VM_IMPORT_HDS_FILE}"
+	if [ "${VM_IMAGE_SOURCE_FORMAT}" = "parallels-payload" ]; then
+		vm_run cp "${VM_IMAGE_FILE}" "${VM_IMPORT_HDS_FILE}" \
+			|| vm_fatal "Failed to stage Parallels payload image: ${VM_IMPORT_HDS_FILE}"
+	elif vm_needs_image_builder; then
+		vm_prepare_image_with_builder_vm
+	else
+		vm_require_cmd qemu-img
+		vm_run cp "${VM_IMAGE_FILE}" "${VM_IMPORT_QCOW2_FILE}" \
+			|| vm_fatal "Failed to stage qcow2 for import: ${VM_IMPORT_QCOW2_FILE}"
+		vm_run qemu-img resize -f qcow2 "${VM_IMPORT_QCOW2_FILE}" "${disk_size}" \
+			|| vm_fatal "Failed to resize qcow2 image: ${VM_IMPORT_QCOW2_FILE}"
+		vm_run qemu-img convert -f qcow2 -O raw "${VM_IMPORT_QCOW2_FILE}" "${VM_IMPORT_RAW_FILE}" \
+			|| vm_fatal "Failed to convert qcow2 to raw: ${VM_IMPORT_RAW_FILE}"
+		vm_run qemu-img convert -f raw -O parallels "${VM_IMPORT_RAW_FILE}" "${VM_IMPORT_HDS_FILE}" \
+			|| vm_fatal "Failed to convert raw image to Parallels payload: ${VM_IMPORT_HDS_FILE}"
+	fi
 
 	[ "${VM_DRY_RUN}" = "1" ] || rm -rf "${VM_BOOT_IMAGE_FILE}"
 	vm_run "/Applications/Parallels Desktop.app/Contents/MacOS/prl_disk_tool" create \
@@ -824,6 +1106,7 @@ function vm_ssh_identity_file() {
 
 function vm_ssh_base_args() {
 	printf "%s\n" \
+		"-F" "/dev/null" \
 		"-o" "BatchMode=yes" \
 		"-o" "StrictHostKeyChecking=accept-new" \
 		"-o" "UserKnownHostsFile=${VM_SSH_KNOWN_HOSTS_PATH}" \
@@ -1735,6 +2018,8 @@ __EOF__
 
 function vm_install_ssh_config() {
 	local config_dir managed_begin managed_end temp_file
+
+	[ "${VM_INSTALL_SSH_CONFIG}" = "true" ] || return 0
 
 	vm_step "Writing repo-local SSH config include"
 	config_dir="$(dirname "${VM_SSH_CONFIG_PATH}")"

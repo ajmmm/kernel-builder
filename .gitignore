@@ -8,3 +8,5 @@ buildroot
 .AppleDouble
 ._*
 *.pvm
+
+fc43/vm-builder/base.hdd.tar.zst
