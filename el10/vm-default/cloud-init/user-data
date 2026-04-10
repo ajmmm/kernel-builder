@@ -52,11 +52,13 @@ __VM_NMCLI_APPLY_CMDS__
   - [ crb, enable ]
   - [ sh, -c, "if [ '__VM_PACKAGE_UPGRADE__' = 'true' ]; then dnf -y upgrade; fi" ]
   - [ dnf, -y, install, git, htop, nano, vim-enhanced, tmux, gcc, gcc-c++, make, cmake, ninja-build, dnf-plugins-core, golang, bc, bison, flex, elfutils-libelf-devel, openssl-devel, dwarves, rsync, jq, curl, wget, skopeo, python3-pip ]
+  - [ sh, -c, "systemctl disable --now cockpit.socket cockpit.service || true" ]
+  - [ sh, -c, "set -f; dnf -y remove cockpit* || true" ]
   - [ dnf, config-manager, addrepo, --from-repofile, "https://download.docker.com/linux/rhel/docker-ce.repo" ]
+  - [ dnf, -y, install, docker-ce, docker-ce-cli, containerd.io ]
+  - [ dnf, -y, --disableexcludes=kubernetes, install, kubelet, kubeadm, kubectl ]
   - [ ssh-keygen, -A ]
   - [ localectl, set-keymap, __VM_KEYBOARD_VC_KEYMAP__ ]
 __VM_LOCALectl_X11_CMD__
 __VM_FIREWALLD_RUNCMD__
-  - [ systemctl, enable, --now, chronyd ]
-  - [ systemctl, enable, --now, sshd ]
-  - [ sh, -c, "echo 'done' > /var/lib/cloud/instance/devbox-ready" ]
+__VM_COMMON_SERVICE_RUNCMD__

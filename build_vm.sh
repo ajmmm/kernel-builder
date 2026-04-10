@@ -12,7 +12,7 @@ vm_init_defaults
 [ "${VM_DEBUG}" = "1" ] && set -x
 
 HELPTEXT=$(cat <<__EOF__
-${BASENAME} [--target <path>] [--name <vm-name>] [--upgrade|--no-upgrade] [--action <a,b,c>] [--dry-run] [--verbose] [--debug] <command>
+${BASENAME} [--target <path>] --instance <vm-name> [--upgrade|--no-upgrade] [--action <a,b,c>] [--dry-run] [--verbose] [--debug] <command>
 
 Commands:
   image         Download and prepare the Fedora boot image
@@ -48,9 +48,10 @@ Environment overrides:
   VM_DEBUG              Default: 0
   VM_WAIT_FOR_UPGRADE   Default: 0
   VM_ACTIONS            Comma-separated action list for sequential execution
-  VM_NAME               Default: from VM_CONFIG_FILE
-  VM_HOSTNAME           Default: from VM_CONFIG_FILE
-  VM_FQDN               Default: from VM_CONFIG_FILE
+  VM_NAME               Required, or pass --instance <vm-name>
+  VM_LOCAL_DOMAIN       Default: ajm.dev
+  VM_HOSTNAME           Derived from VM_NAME
+  VM_FQDN               Derived from VM_NAME.VM_LOCAL_DOMAIN
   VM_USERNAME           Default: from VM_CONFIG_FILE
   VM_CPUS               Default: from VM_CONFIG_FILE
   VM_MEMORY_MB          Default: from VM_CONFIG_FILE

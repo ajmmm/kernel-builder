@@ -241,9 +241,10 @@ function vm_load_parallels_config() {
 }
 
 function vm_resolve_vm_defaults() {
-	VM_NAME="${VM_NAME:-vm-dev}"
-	VM_HOSTNAME="${VM_HOSTNAME:-${VM_NAME}}"
-	VM_FQDN="${VM_FQDN:-${VM_HOSTNAME}.local}"
+	[ -n "${VM_NAME:-}" ] || vm_fatal "VM instance is required. Pass --instance <vm-name>."
+	VM_LOCAL_DOMAIN="${VM_LOCAL_DOMAIN:-ajm.dev}"
+	VM_HOSTNAME="${VM_NAME}"
+	VM_FQDN="${VM_HOSTNAME}.${VM_LOCAL_DOMAIN}"
 	VM_USERNAME="${VM_USERNAME:-dev}"
 	VM_CPUS="${VM_CPUS:-6}"
 	VM_MEMORY_MB="${VM_MEMORY_MB:-12288}"
@@ -256,9 +257,6 @@ function vm_resolve_vm_defaults() {
 	VM_KEYBOARD_VC_KEYMAP="${VM_KEYBOARD_VC_KEYMAP:-gb}"
 	VM_K8S_CHANNEL="${VM_K8S_CHANNEL:-v1.35}"
 	VM_CHRONY_MAKESTEP="${VM_CHRONY_MAKESTEP:-1.0 3}"
-	if [ -n "${VM_PACKAGE_UPDATE+x}" ] && [ -z "${VM_PACKAGE_UPGRADE+x}" ]; then
-		VM_PACKAGE_UPGRADE="${VM_PACKAGE_UPDATE}"
-	fi
 	VM_PACKAGE_UPGRADE="${VM_PACKAGE_UPGRADE:-true}"
 	VM_PACKAGE_REBOOT_IF_REQUIRED="${VM_PACKAGE_REBOOT_IF_REQUIRED:-true}"
 	VM_WAIT_FOR_UPGRADE="${VM_WAIT_FOR_UPGRADE:-0}"
@@ -269,12 +267,14 @@ function vm_resolve_vm_defaults() {
 	VM_TARGET_SLUG="${VM_TARGET_SLUG:-$(vm_target_slug)}"
 	VM_CACHE_DIR="${VM_CACHE_DIR:-${BASEPATH}/.cache}"
 	VM_IMAGE_DIR="${VM_IMAGE_DIR:-${VM_CACHE_DIR}/images}"
+	VM_INSTANCE_DIR="${VM_INSTANCE_DIR:-${VM_CACHE_DIR}/instances}"
 	VM_SEED_DIR="${VM_SEED_DIR:-${VM_CACHE_DIR}/seed/${VM_TARGET_SLUG}/${VM_NAME}}"
 	VM_HOME_BASE="${VM_HOME_BASE:-${HOME}/Parallels}"
 	VM_PARALLELS_DIR="${VM_PARALLELS_DIR:-${VM_HOME_BASE}}"
 	VM_BUNDLE_PATH="${VM_BUNDLE_PATH:-${VM_PARALLELS_DIR}/${VM_NAME}.pvm}"
 	VM_VM_DISK_PATH="${VM_VM_DISK_PATH:-${VM_BUNDLE_PATH}/${VM_NAME}.hdd}"
 	VM_CLOUD_INIT_DIR="${VM_CLOUD_INIT_DIR:-${VM_TARGET_DIR}/cloud-init}"
+	VM_CLOUD_INIT_SHARED_DIR="${VM_CLOUD_INIT_SHARED_DIR:-${BASEPATH}/config/cloud-init}"
 	if [ -z "${VM_IMAGE_ARTIFACTS_URL}" ]; then
 		local arch_url_var
 		arch_url_var="$(vm_arch_url_var_name)"
@@ -293,6 +293,7 @@ function vm_resolve_vm_defaults() {
 	VM_SSH_CONFIG_PATH="${VM_SSH_CONFIG_PATH:-${VM_SSH_CONFIG_DIR}/${VM_SSH_CONFIG_BASENAME}}"
 	VM_SSH_KNOWN_HOSTS_BASENAME="${VM_SSH_KNOWN_HOSTS_BASENAME:-${VM_SSH_HOST_ALIAS}.known_hosts}"
 	VM_SSH_KNOWN_HOSTS_PATH="${VM_SSH_KNOWN_HOSTS_PATH:-${VM_SSH_CONFIG_DIR}/${VM_SSH_KNOWN_HOSTS_BASENAME}}"
+	VM_INSTANCE_STATE_PATH="${VM_INSTANCE_STATE_PATH:-${VM_INSTANCE_DIR}/${VM_NAME}.env}"
 	VM_CONVERTED_DIR="${VM_CONVERTED_DIR:-${VM_IMAGE_DIR}/converted}"
 	VM_RECREATE="${VM_RECREATE:-0}"
 }
@@ -374,7 +375,7 @@ function vm_parse_args() {
 				shift 2
 				;;
 
-			--name|--instance-name)
+			--instance|--instance-name|--name)
 				[ -n "${2}" ] || vm_fatal "${1} requires a value"
 				VM_NAME="${2}"
 				shift 2
@@ -1121,6 +1122,69 @@ function vm_render_firewalld_runcmd() {
 	printf "  - [ sh, -c, \"systemctl stop firewalld || true\" ]\n"
 }
 
+function vm_render_common_service_runcmd() {
+	printf "  - [ systemctl, enable, --now, chronyd ]\n"
+	printf "  - [ systemctl, enable, --now, containerd ]\n"
+	printf "  - [ systemctl, enable, --now, docker ]\n"
+	printf "  - [ systemctl, enable, kubelet ]\n"
+	printf "  - [ systemctl, enable, --now, fstrim.timer ]\n"
+	printf "  - [ systemctl, enable, --now, sshd ]\n"
+	printf "  - [ sh, -c, \"echo 'done' > /var/lib/cloud/instance/devbox-ready\" ]\n"
+}
+
+function vm_write_instance_state() {
+	[ "${VM_DRY_RUN}" = "1" ] && {
+		vm_info "Would write instance state: ${VM_INSTANCE_STATE_PATH}"
+		return 0
+	}
+
+	mkdir -p "${VM_INSTANCE_DIR}" || vm_fatal "Failed to create instance state directory: ${VM_INSTANCE_DIR}"
+	cat >"${VM_INSTANCE_STATE_PATH}" <<__EOF__ || vm_fatal "Failed to write instance state: ${VM_INSTANCE_STATE_PATH}"
+VM_NAME=${VM_NAME}
+VM_TARGET=${VM_TARGET}
+VM_HOSTNAME=${VM_HOSTNAME}
+VM_FQDN=${VM_FQDN}
+VM_USERNAME=${VM_USERNAME}
+VM_SSH_HOST_ALIAS=${VM_SSH_HOST_ALIAS}
+VM_SSH_HOSTNAME=${VM_SSH_HOSTNAME}
+VM_SSH_CONFIG_PATH=${VM_SSH_CONFIG_PATH}
+VM_SSH_KNOWN_HOSTS_PATH=${VM_SSH_KNOWN_HOSTS_PATH}
+VM_PACKAGE_UPGRADE=${VM_PACKAGE_UPGRADE}
+VM_PACKAGE_REBOOT_IF_REQUIRED=${VM_PACKAGE_REBOOT_IF_REQUIRED}
+VM_BUNDLE_PATH=${VM_BUNDLE_PATH}
+__EOF__
+	chmod 600 "${VM_INSTANCE_STATE_PATH}" || vm_fatal "Failed to set permissions on ${VM_INSTANCE_STATE_PATH}"
+	vm_info "Updated instance state: ${VM_INSTANCE_STATE_PATH}"
+}
+
+function vm_remove_instance_state() {
+	if [ "${VM_DRY_RUN}" = "1" ]; then
+		vm_info "Would remove instance state: ${VM_INSTANCE_STATE_PATH}"
+		return 0
+	fi
+
+	if [ -f "${VM_INSTANCE_STATE_PATH}" ]; then
+		rm -f "${VM_INSTANCE_STATE_PATH}" || vm_fatal "Failed to remove instance state: ${VM_INSTANCE_STATE_PATH}"
+		vm_info "Removed instance state: ${VM_INSTANCE_STATE_PATH}"
+	fi
+}
+
+function vm_cloud_init_template_path() {
+	local filename="${1}"
+
+	if [ -r "${VM_CLOUD_INIT_DIR}/${filename}" ]; then
+		printf "%s\n" "${VM_CLOUD_INIT_DIR}/${filename}"
+		return 0
+	fi
+
+	if [ -r "${VM_CLOUD_INIT_SHARED_DIR}/${filename}" ]; then
+		printf "%s\n" "${VM_CLOUD_INIT_SHARED_DIR}/${filename}"
+		return 0
+	fi
+
+	return 1
+}
+
 function vm_expand_template() {
 	local template_path="${1}"
 	local ssh_key="${2}"
@@ -1152,6 +1216,10 @@ function vm_expand_template() {
 				vm_render_firewalld_runcmd
 				continue
 				;;
+			"__VM_COMMON_SERVICE_RUNCMD__")
+				vm_render_common_service_runcmd
+				continue
+				;;
 		esac
 
 		line="${line//__VM_INSTANCE_ID__/${VM_INSTANCE_ID}}"
@@ -1180,21 +1248,24 @@ function vm_render_template() {
 }
 
 function vm_create_seed_iso() {
+	local user_data_template meta_data_template network_config_template
+
 	vm_step "Rendering cloud-init seed"
 	vm_require_cmd hdiutil
 	vm_ensure_dirs
 
 	[ -d "${VM_CLOUD_INIT_DIR}" ] || vm_fatal "cloud-init directory not found: ${VM_CLOUD_INIT_DIR}"
-	[ -r "${VM_CLOUD_INIT_DIR}/user-data" ] || vm_fatal "user-data not found: ${VM_CLOUD_INIT_DIR}/user-data"
-	[ -r "${VM_CLOUD_INIT_DIR}/meta-data" ] || vm_fatal "meta-data not found: ${VM_CLOUD_INIT_DIR}/meta-data"
+	user_data_template="$(vm_cloud_init_template_path user-data)" || vm_fatal "user-data template not found for ${VM_TARGET}"
+	meta_data_template="$(vm_cloud_init_template_path meta-data)" || vm_fatal "meta-data template not found for ${VM_TARGET}"
+	network_config_template="$(vm_cloud_init_template_path network-config || true)"
 
-	vm_render_template "${VM_CLOUD_INIT_DIR}/user-data" >"${VM_SEED_DIR}/user-data" || vm_fatal "Failed to render user-data"
-	vm_render_template "${VM_CLOUD_INIT_DIR}/meta-data" >"${VM_SEED_DIR}/meta-data" || vm_fatal "Failed to render meta-data"
+	vm_render_template "${user_data_template}" >"${VM_SEED_DIR}/user-data" || vm_fatal "Failed to render user-data"
+	vm_render_template "${meta_data_template}" >"${VM_SEED_DIR}/meta-data" || vm_fatal "Failed to render meta-data"
 	vm_verify_structured_file yaml "${VM_SEED_DIR}/user-data"
 	vm_verify_structured_file yaml "${VM_SEED_DIR}/meta-data"
 
-	if [ -r "${VM_CLOUD_INIT_DIR}/network-config" ]; then
-		vm_render_template "${VM_CLOUD_INIT_DIR}/network-config" >"${VM_SEED_DIR}/network-config" \
+	if [ -n "${network_config_template}" ]; then
+		vm_render_template "${network_config_template}" >"${VM_SEED_DIR}/network-config" \
 			|| vm_fatal "Failed to render network-config"
 		vm_verify_structured_file yaml "${VM_SEED_DIR}/network-config"
 	else
@@ -1502,6 +1573,7 @@ function vm_create() {
 	vm_attach_boot_media "${prlctl}"
 	vm_apply_prl_config
 	vm_install_ssh_config
+	vm_write_instance_state
 
 	cat <<__EOF__
 VM prepared: ${VM_NAME}
@@ -1589,6 +1661,7 @@ function vm_destroy() {
 	vm_run_quiet "${prlctl}" delete "${VM_NAME}" || vm_fatal "Failed to delete VM: ${VM_NAME}"
 	vm_info "Deleted VM: ${VM_NAME}"
 	vm_remove_ssh_config
+	vm_remove_instance_state
 }
 
 function vm_status() {
