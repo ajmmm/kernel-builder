@@ -7,10 +7,6 @@ BASEPATH=$(cd "$(dirname "${0}")" && pwd)
 
 vm_parse_args "$@"
 
-vm_init_defaults
-
-[ "${VM_DEBUG}" = "1" ] && set -x
-
 HELPTEXT=$(cat <<__EOF__
 ${BASENAME} [--target <path>] --instance <vm-name> [--upgrade|--no-upgrade] [--action <a,b,c>] [--dry-run] [--verbose] [--debug] <command>
 
@@ -22,6 +18,7 @@ Commands:
   prl-config    Apply Parallels VM settings to an existing VM
   tools-update  Trigger a manual Parallels Tools install/update
   boot          Start the VM
+  reboot        Reboot the guest over SSH and wait for it to return
   down          Stop the VM
   kill          Force-stop the VM
   stop-destroy  Stop and then delete the VM registration
@@ -73,6 +70,17 @@ __EOF__
 )
 
 case "${VM_COMMAND}" in
+	help|-h|--help)
+		echo "${HELPTEXT}"
+		exit 0
+		;;
+esac
+
+vm_init_defaults
+
+[ "${VM_DEBUG}" = "1" ] && set -x
+
+case "${VM_COMMAND}" in
 	action-list)
 		vm_run_action_list "${VM_ACTIONS}"
 		;;
@@ -102,6 +110,10 @@ case "${VM_COMMAND}" in
 		;;
 
 	boot|start)
+		vm_dispatch_action "${VM_COMMAND}"
+		;;
+
+	reboot|restart)
 		vm_dispatch_action "${VM_COMMAND}"
 		;;
 
@@ -147,10 +159,6 @@ case "${VM_COMMAND}" in
 
 	up)
 		vm_dispatch_action up
-		;;
-
-	help|-h|--help)
-		echo "${HELPTEXT}"
 		;;
 
 	*)

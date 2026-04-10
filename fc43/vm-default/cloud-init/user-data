@@ -16,6 +16,8 @@ users:
     ssh_authorized_keys:
       - __VM_SSH_PUBLIC_KEY__
 
+# Fedora's cloud image handles package update/upgrade cleanly through the
+# built-in cloud-init package module, so we drive the behavior directly here.
 package_update: __VM_PACKAGE_UPGRADE__
 package_upgrade: __VM_PACKAGE_UPGRADE__
 package_reboot_if_required: __VM_PACKAGE_REBOOT_IF_REQUIRED__
@@ -44,6 +46,9 @@ packages:
   - wget
   - skopeo
   - python3-pip
+  - clang
+  - llvm
+  - helm
 
 write_files:
   - path: /etc/modules-load.d/k8s.conf
@@ -69,6 +74,26 @@ write_files:
     permissions: "0644"
     content: |
       makestep __VM_CHRONY_MAKESTEP__
+  - path: /etc/profile.d/ssh-agent.sh
+    permissions: "0644"
+    content: |
+      # Start a per-user ssh-agent for interactive shell logins.
+      [ -n "${PS1:-}" ] || return 0
+      [ -n "${SSH_AUTH_SOCK:-}" ] && [ -S "${SSH_AUTH_SOCK}" ] && return 0
+      agent_env="${XDG_RUNTIME_DIR:-/tmp}/ssh-agent-${USER}.env"
+      if [ -r "${agent_env}" ]; then
+        . "${agent_env}" >/dev/null 2>&1 || true
+      fi
+      if [ -n "${SSH_AUTH_SOCK:-}" ] && [ -S "${SSH_AUTH_SOCK}" ] && kill -0 "${SSH_AGENT_PID:-0}" 2>/dev/null; then
+        export SSH_AUTH_SOCK SSH_AGENT_PID
+        return 0
+      fi
+      eval "$(ssh-agent -s)" >/dev/null
+      umask 077
+      {
+        printf 'export SSH_AUTH_SOCK=%q\n' "${SSH_AUTH_SOCK}"
+        printf 'export SSH_AGENT_PID=%q\n' "${SSH_AGENT_PID}"
+      } > "${agent_env}"
 __VM_NMCONNECTION_FILES__
 
 runcmd:
@@ -76,8 +101,17 @@ __VM_NMCLI_APPLY_CMDS__
   - [ dnf, config-manager, addrepo, --from-repofile, "https://download.docker.com/linux/fedora/docker-ce.repo" ]
   - [ dnf, -y, install, docker-ce, docker-ce-cli, containerd.io ]
   - [ dnf, -y, --disableexcludes=kubernetes, install, kubelet, kubeadm, kubectl ]
+  - [ groupadd, -f, docker ]
+  - [ usermod, -aG, docker, __VM_USERNAME__ ]
+  - [ sh, -c, "GOBIN=/usr/local/bin go install sigs.k8s.io/kind@v0.19.0" ]
+  - [ sh, -c, "GOBIN=/usr/local/bin go install github.com/onsi/ginkgo/ginkgo@v1.16.5" ]
+  - [ sh, -c, "GOBIN=/usr/local/bin go install github.com/mfridman/tparse@latest" ]
+  - [ sh, -c, "GOBIN=/usr/local/bin go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest" ]
+  - [ sh, -c, "set -e; tmpdir=$(mktemp -d); trap 'rm -rf \"$tmpdir\"' EXIT; cd \"$tmpdir\"; CILIUM_CLI_VERSION=$(curl -s https://raw.githubusercontent.com/cilium/cilium-cli/main/stable.txt); CLI_ARCH=amd64; if [ \"$(uname -m)\" = \"aarch64\" ]; then CLI_ARCH=arm64; fi; curl -L --fail --remote-name-all https://github.com/cilium/cilium-cli/releases/download/${CILIUM_CLI_VERSION}/cilium-linux-${CLI_ARCH}.tar.gz{,.sha256sum}; sha256sum --check cilium-linux-${CLI_ARCH}.tar.gz.sha256sum; tar xzvfC cilium-linux-${CLI_ARCH}.tar.gz /usr/local/bin; rm -f cilium-linux-${CLI_ARCH}.tar.gz cilium-linux-${CLI_ARCH}.tar.gz.sha256sum" ]
   - [ ssh-keygen, -A ]
   - [ localectl, set-keymap, __VM_KEYBOARD_VC_KEYMAP__ ]
 __VM_LOCALectl_X11_CMD__
 __VM_FIREWALLD_RUNCMD__
+  - [ sh, -c, "ln -sfn /media/psf/Downloads /Downloads" ]
+  - [ sh, -c, "ln -sfn /media/psf/Develop /Develop" ]
 __VM_COMMON_SERVICE_RUNCMD__

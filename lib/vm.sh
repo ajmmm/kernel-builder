@@ -1326,6 +1326,30 @@ function vm_exists() {
 	vm_prl_list_names | awk 'NR > 1 {print}' | grep -Fx "${VM_NAME}" 1>/dev/null 2>&1
 }
 
+function vm_current_state() {
+	local prlctl
+
+	prlctl="$(vm_parallels_bin)"
+	[ -x "${prlctl}" ] || vm_fatal "Parallels CLI not found: ${prlctl}"
+	"${prlctl}" list --all -o name,status 2>/dev/null | awk -v name="${VM_NAME}" 'NR > 1 && $1 == name {print $2; exit}'
+}
+
+function vm_is_running() {
+	local state
+
+	state="$(vm_current_state)"
+	[ -n "${state}" ] || return 1
+
+	case "${state}" in
+		stopped|suspended)
+			return 1
+			;;
+		*)
+			return 0
+			;;
+	esac
+}
+
 function vm_existing_home_path() {
 	local prlctl
 
@@ -1600,6 +1624,27 @@ function vm_boot() {
 	vm_info "Started VM: ${VM_NAME}"
 }
 
+function vm_reboot() {
+	[ "${VM_DRY_RUN}" = "1" ] && {
+		vm_step "Requesting guest reboot for ${VM_NAME}"
+		vm_run ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="${VM_SSH_KNOWN_HOSTS_PATH}" -o ConnectTimeout=5 \
+			"${VM_USERNAME}@${VM_SSH_HOSTNAME}" "sudo systemctl reboot"
+		return 0
+	}
+
+	vm_step "Requesting guest reboot for ${VM_NAME}"
+	if ! vm_wait_for_ssh_up; then
+		vm_fatal "SSH is not reachable for ${VM_NAME}; use kill if you need to force-stop it."
+	fi
+
+	vm_run ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="${VM_SSH_KNOWN_HOSTS_PATH}" -o ConnectTimeout=5 \
+		"${VM_USERNAME}@${VM_SSH_HOSTNAME}" "sudo systemctl reboot" \
+		|| vm_fatal "Failed to request guest reboot for ${VM_NAME}"
+
+	vm_wait_for_ssh_down || vm_fatal "Timed out waiting for ${VM_NAME} to begin rebooting"
+	vm_wait_for_ssh_up || vm_fatal "Timed out waiting for ${VM_NAME} to come back after reboot"
+}
+
 function vm_tools_update() {
 	local prlctl
 
@@ -1654,10 +1699,16 @@ function vm_kill() {
 }
 
 function vm_destroy() {
-	local prlctl
+	local prlctl state
 	vm_step "Deleting VM ${VM_NAME}"
 	prlctl="$(vm_parallels_bin)"
 	[ -x "${prlctl}" ] || vm_fatal "Parallels CLI not found: ${prlctl}"
+
+	if [ "${VM_DRY_RUN}" != "1" ] && vm_is_running; then
+		state="$(vm_current_state)"
+		vm_fatal "Refusing to destroy ${VM_NAME} while it is ${state}. Use down or kill first."
+	fi
+
 	vm_run_quiet "${prlctl}" delete "${VM_NAME}" || vm_fatal "Failed to delete VM: ${VM_NAME}"
 	vm_info "Deleted VM: ${VM_NAME}"
 	vm_remove_ssh_config
@@ -1778,6 +1829,9 @@ function vm_dispatch_action() {
 			;;
 		boot|start)
 			vm_boot
+			;;
+		reboot|restart)
+			vm_reboot
 			;;
 		wait|wait-ready)
 			vm_wait_ready
