@@ -19,8 +19,10 @@ Commands:
   seed          Generate cloud-init seed media
   create        Create the Parallels VM
   prl-config    Apply Parallels VM settings to an existing VM
+  tools-update  Trigger a manual Parallels Tools install/update
   boot          Start the VM
   down          Stop the VM
+  kill          Force-stop the VM
   destroy       Delete the VM registration
   status        Show VM status
   ssh-config    Print ssh config snippet for the VM
@@ -73,12 +75,20 @@ case "${VM_COMMAND}" in
 		vm_apply_prl_config
 		;;
 
+	tools-update|tools-install|install-tools)
+		vm_tools_update
+		;;
+
 	boot|start)
 		vm_boot
 		;;
 
 	down|stop)
 		vm_down
+		;;
+
+	kill|force-stop)
+		vm_kill
 		;;
 
 	destroy|delete)

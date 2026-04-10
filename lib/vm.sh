@@ -143,8 +143,10 @@ function vm_resolve_vm_defaults() {
 	VM_CACHE_DIR="${VM_CACHE_DIR:-${BASEPATH}/.cache}"
 	VM_IMAGE_DIR="${VM_IMAGE_DIR:-${VM_CACHE_DIR}/images}"
 	VM_SEED_DIR="${VM_SEED_DIR:-${VM_CACHE_DIR}/seed/${VM_TARGET_SLUG}/${VM_NAME}}"
-	VM_PARALLELS_DIR="${VM_PARALLELS_DIR:-${VM_CACHE_DIR}/parallels/${VM_TARGET_SLUG}}"
+	VM_HOME_BASE="${VM_HOME_BASE:-${VM_CACHE_DIR}/parallels/${VM_TARGET_SLUG}}"
+	VM_PARALLELS_DIR="${VM_PARALLELS_DIR:-${VM_HOME_BASE}}"
 	VM_BUNDLE_PATH="${VM_BUNDLE_PATH:-${VM_PARALLELS_DIR}/${VM_NAME}.pvm}"
+	VM_VM_DISK_PATH="${VM_VM_DISK_PATH:-${VM_BUNDLE_PATH}/${VM_NAME}.hdd}"
 	VM_CLOUD_INIT_DIR="${VM_CLOUD_INIT_DIR:-${VM_TARGET_DIR}/cloud-init}"
 	VM_IMAGE_BASEURL="${VM_IMAGE_BASEURL:-$(vm_default_image_baseurl)}"
 	VM_IMAGE_ARTIFACTS_URL="${VM_IMAGE_ARTIFACTS_URL:-$(vm_image_artifacts_url)}"
@@ -168,7 +170,7 @@ function vm_resolve_prl_defaults() {
 	PRL_SMART_MOUNT="${PRL_SMART_MOUNT:-off}"
 	PRL_SHARE_HOST_FOLDERS="${PRL_SHARE_HOST_FOLDERS:-on}"
 	PRL_SHARE_HOST_FOLDERS_AUTOMOUNT="${PRL_SHARE_HOST_FOLDERS_AUTOMOUNT:-on}"
-	PRL_SHARE_HOST_FOLDERS_DEFINED="${PRL_SHARE_HOST_FOLDERS_DEFINED:-off}"
+	PRL_SHARE_HOST_FOLDERS_DEFINED="${PRL_SHARE_HOST_FOLDERS_DEFINED:-}"
 	PRL_SHARE_HOST_FOLDER_DOWNLOADS="${PRL_SHARE_HOST_FOLDER_DOWNLOADS:-on}"
 	PRL_SHARE_HOST_FOLDER_DOWNLOADS_NAME="${PRL_SHARE_HOST_FOLDER_DOWNLOADS_NAME:-Downloads}"
 	PRL_SHARE_HOST_FOLDER_DOWNLOADS_PATH="${PRL_SHARE_HOST_FOLDER_DOWNLOADS_PATH:-${HOME}/Downloads}"
@@ -180,6 +182,9 @@ function vm_resolve_prl_defaults() {
 	PRL_TIME_SYNC="${PRL_TIME_SYNC:-on}"
 	PRL_HDD_ONLINE_COMPACT="${PRL_HDD_ONLINE_COMPACT:-on}"
 	PRL_SHARED_CLOUD="${PRL_SHARED_CLOUD:-off}"
+	PRL_SYNC_HOST_PRINTERS="${PRL_SYNC_HOST_PRINTERS:-off}"
+	PRL_SYNC_DEFAULT_PRINTER="${PRL_SYNC_DEFAULT_PRINTER:-off}"
+	PRL_SHOW_HOST_PRINTER_UI="${PRL_SHOW_HOST_PRINTER_UI:-off}"
 	PRL_SOUND="${PRL_SOUND:-off}"
 	PRL_MICROPHONE="${PRL_MICROPHONE:-off}"
 	PRL_AUTO_SHARE_CAMERA="${PRL_AUTO_SHARE_CAMERA:-off}"
@@ -533,6 +538,21 @@ function vm_prepare_boot_disk() {
 	echo "Prepared Parallels boot disk: ${VM_BOOT_IMAGE_FILE}"
 }
 
+function vm_clone_boot_disk() {
+	vm_require_cmd cp
+	vm_require_cmd rm
+
+	vm_prepare_boot_disk_paths
+	[ -d "${VM_BOOT_IMAGE_FILE}" ] || vm_fatal "Base boot disk not found: ${VM_BOOT_IMAGE_FILE}"
+	[ -d "${VM_BUNDLE_PATH}" ] || vm_fatal "VM bundle path not found: ${VM_BUNDLE_PATH}"
+
+	[ "${VM_DRY_RUN}" = "1" ] || rm -rf "${VM_VM_DISK_PATH}"
+	vm_run cp -R "${VM_BOOT_IMAGE_FILE}" "${VM_VM_DISK_PATH}" \
+		|| vm_fatal "Failed to clone base boot disk into VM bundle: ${VM_VM_DISK_PATH}"
+
+	echo "Cloned VM boot disk: ${VM_VM_DISK_PATH}"
+}
+
 function vm_render_keyboard_block() {
 	cat <<__EOF__
 keyboard:
@@ -557,6 +577,90 @@ function vm_render_localectl_x11_cmd() {
 	printf " ]\n"
 }
 
+function vm_get_cfg() {
+	local key="${1}"
+	printf "%s\n" "${!key}"
+}
+
+function vm_normalize_mac() {
+	local mac="${1}"
+
+	mac="$(printf "%s" "${mac}" | tr '[:upper:]' '[:lower:]' | tr -d ':')"
+	printf "%s:%s:%s:%s:%s:%s\n" \
+		"${mac:0:2}" "${mac:2:2}" "${mac:4:2}" \
+		"${mac:6:2}" "${mac:8:2}" "${mac:10:2}"
+}
+
+function vm_network_dns_count() {
+	local value="${1}"
+
+	[ -n "${value}" ] || {
+		printf "0\n"
+		return 0
+	}
+
+	printf "%s\n" "${value}" | awk -F',' '{print NF}'
+}
+
+function vm_render_network_block() {
+	local idx="${1}"
+	local prefix="VM_NET_${idx}"
+	local name type mac method address gateway dns metric never_default iface
+	local dns_entry
+
+	name="$(vm_get_cfg "${prefix}_NAME")"
+	type="$(vm_get_cfg "${prefix}_TYPE")"
+	mac="$(vm_normalize_mac "$(vm_get_cfg "${prefix}_MAC")")"
+	method="$(vm_get_cfg "${prefix}_IPV4_METHOD")"
+	address="$(vm_get_cfg "${prefix}_IPV4_ADDRESS")"
+	gateway="$(vm_get_cfg "${prefix}_IPV4_GATEWAY")"
+	dns="$(vm_get_cfg "${prefix}_IPV4_DNS")"
+	metric="$(vm_get_cfg "${prefix}_ROUTE_METRIC")"
+	never_default="$(vm_get_cfg "${prefix}_NEVER_DEFAULT")"
+	iface="$(vm_get_cfg "${prefix}_PRL_IFACE")"
+
+	printf "  %s:\n" "${name}"
+	printf "    match:\n"
+	printf "      macaddress: \"%s\"\n" "${mac}"
+	printf "    set-name: %s\n" "${name}"
+	printf "    dhcp4: false\n"
+	printf "    dhcp6: false\n"
+
+	if [ "${method}" = "static" ]; then
+		printf "    addresses:\n"
+		printf "      - %s\n" "${address}"
+
+		if [ "${never_default}" != "yes" ] && [ -n "${gateway}" ]; then
+			printf "    routes:\n"
+			printf "      - to: default\n"
+			printf "        via: %s\n" "${gateway}"
+			[ -n "${metric}" ] && printf "        metric: %s\n" "${metric}"
+		fi
+
+		if [ -n "${dns}" ]; then
+			printf "    nameservers:\n"
+			printf "      addresses:\n"
+			IFS=',' read -r -a dns_entries <<< "${dns}"
+			for dns_entry in "${dns_entries[@]}"; do
+				printf "        - %s\n" "${dns_entry}"
+			done
+		fi
+	elif [ "${method}" = "disabled" ]; then
+		printf "    link-local: []\n"
+	fi
+
+	printf "    optional: true\n"
+}
+
+function vm_render_network_config() {
+	local idx count
+
+	count="${VM_NET_COUNT:-0}"
+	for ((idx = 0; idx < count; idx++)); do
+		vm_render_network_block "${idx}"
+	done
+}
+
 function vm_expand_template() {
 	local template_path="${1}"
 	local ssh_key="${2}"
@@ -570,6 +674,10 @@ function vm_expand_template() {
 				;;
 			"__VM_LOCALectl_X11_CMD__")
 				vm_render_localectl_x11_cmd
+				continue
+				;;
+			"__VM_NETWORK_CONFIG__")
+				vm_render_network_config
 				continue
 				;;
 		esac
@@ -607,6 +715,13 @@ function vm_create_seed_iso() {
 
 	vm_render_template "${VM_CLOUD_INIT_DIR}/user-data" >"${VM_SEED_DIR}/user-data" || vm_fatal "Failed to render user-data"
 	vm_render_template "${VM_CLOUD_INIT_DIR}/meta-data" >"${VM_SEED_DIR}/meta-data" || vm_fatal "Failed to render meta-data"
+
+	if [ -r "${VM_CLOUD_INIT_DIR}/network-config" ]; then
+		vm_render_template "${VM_CLOUD_INIT_DIR}/network-config" >"${VM_SEED_DIR}/network-config" \
+			|| vm_fatal "Failed to render network-config"
+	else
+		[ "${VM_DRY_RUN}" = "1" ] || rm -f "${VM_SEED_DIR}/network-config"
+	fi
 
 	[ "${VM_DRY_RUN}" = "1" ] || rm -f "${VM_SEED_ISO}"
 
@@ -678,36 +793,44 @@ function vm_apply_prl_config() {
 	local prlctl
 	local nested_status
 	local sound_status
+	local prl_args
 
 	prlctl="$(vm_parallels_bin)"
 	[ -x "${prlctl}" ] || vm_fatal "Parallels CLI not found: ${prlctl}"
 
-	vm_prl_set "${prlctl}" \
-		--autostart "${PRL_AUTOSTART}" \
-		--autostop "${PRL_AUTOSTOP}" \
-		--startup-view "${PRL_STARTUP_VIEW}" \
-		--on-shutdown "${PRL_ON_SHUTDOWN}" \
-		--on-window-close "${PRL_ON_WINDOW_CLOSE}" \
-		--pause-idle "${PRL_PAUSE_IDLE}" \
-		--adaptive-hypervisor "${PRL_ADAPTIVE_HYPERVISOR}" \
-		--shared-profile "${PRL_SHARED_PROFILE}" \
-		--smart-mount "${PRL_SMART_MOUNT}" \
-		--shf-host "${PRL_SHARE_HOST_FOLDERS}" \
-		--shf-host-automount "${PRL_SHARE_HOST_FOLDERS_AUTOMOUNT}" \
-		--shf-host-defined "${PRL_SHARE_HOST_FOLDERS_DEFINED}" \
-		--shf-guest "${PRL_SHARE_GUEST_FOLDERS}" \
-		--fullscreen-use-all-displays "${PRL_FULL_SCREEN_USE_ALL_DISPLAYS}" \
-		--auto-switch-fullscreen "${PRL_COHERENCE_AUTO_SWITCH_FULLSCREEN}" \
-		--show-guest-notifications "${PRL_SHOW_GUEST_NOTIFICATIONS}" \
-		--show-guest-app-folder-in-dock "${PRL_SHOW_GUEST_APP_FOLDER_IN_DOCK}" \
-		--bounce-dock-icon-when-app-flashes "${PRL_BOUNCE_DOCK_ICON_WHEN_APP_FLASHES}" \
-		--sh-app-host-to-guest "${PRL_SH_APP_HOST_TO_GUEST}" \
-		--sh-app-guest-to-host "${PRL_SH_APP_GUEST_TO_HOST}" \
-		--winsystray-in-macmenu "${PRL_WINSYSTRAY_IN_MACMENU}" \
-		--shared-clipboard "${PRL_SHARED_CLIPBOARD}" \
-		--time-sync "${PRL_TIME_SYNC}" \
-		--shared-cloud "${PRL_SHARED_CLOUD}" \
+	prl_args=(
+		--autostart "${PRL_AUTOSTART}"
+		--autostop "${PRL_AUTOSTOP}"
+		--startup-view "${PRL_STARTUP_VIEW}"
+		--on-shutdown "${PRL_ON_SHUTDOWN}"
+		--on-window-close "${PRL_ON_WINDOW_CLOSE}"
+		--pause-idle "${PRL_PAUSE_IDLE}"
+		--adaptive-hypervisor "${PRL_ADAPTIVE_HYPERVISOR}"
+		--shared-profile "${PRL_SHARED_PROFILE}"
+		--smart-mount "${PRL_SMART_MOUNT}"
+		--shf-host "${PRL_SHARE_HOST_FOLDERS}"
+		--shf-host-automount "${PRL_SHARE_HOST_FOLDERS_AUTOMOUNT}"
+		--shf-guest "${PRL_SHARE_GUEST_FOLDERS}"
+		--fullscreen-use-all-displays "${PRL_FULL_SCREEN_USE_ALL_DISPLAYS}"
+		--auto-switch-fullscreen "${PRL_COHERENCE_AUTO_SWITCH_FULLSCREEN}"
+		--show-guest-notifications "${PRL_SHOW_GUEST_NOTIFICATIONS}"
+		--show-guest-app-folder-in-dock "${PRL_SHOW_GUEST_APP_FOLDER_IN_DOCK}"
+		--bounce-dock-icon-when-app-flashes "${PRL_BOUNCE_DOCK_ICON_WHEN_APP_FLASHES}"
+		--sh-app-host-to-guest "${PRL_SH_APP_HOST_TO_GUEST}"
+		--sh-app-guest-to-host "${PRL_SH_APP_GUEST_TO_HOST}"
+		--winsystray-in-macmenu "${PRL_WINSYSTRAY_IN_MACMENU}"
+		--shared-clipboard "${PRL_SHARED_CLIPBOARD}"
+		--time-sync "${PRL_TIME_SYNC}"
+		--shared-cloud "${PRL_SHARED_CLOUD}"
+		--sync-host-printers "${PRL_SYNC_HOST_PRINTERS}"
+		--sync-default-printer "${PRL_SYNC_DEFAULT_PRINTER}"
+		--show-host-printer-ui "${PRL_SHOW_HOST_PRINTER_UI}"
 		--auto-share-camera "${PRL_AUTO_SHARE_CAMERA}"
+	)
+
+	[ -n "${PRL_SHARE_HOST_FOLDERS_DEFINED}" ] && prl_args+=(--shf-host-defined "${PRL_SHARE_HOST_FOLDERS_DEFINED}")
+
+	vm_prl_set "${prlctl}" "${prl_args[@]}"
 
 	if [ "${HOST_ARCH}" = "x86_64" ]; then
 		vm_prl_set "${prlctl}" --nested-virt "${PRL_NESTED_VIRT}"
@@ -761,6 +884,54 @@ Not applied from CLI yet and may require GUI verification:
 __EOF__
 }
 
+function vm_prl_ensure_net() {
+	local prlctl="${1}"
+	local index="${2}"
+	local prefix="VM_NET_${index}"
+	local device="net${index}"
+	local add_device="net"
+	local type iface mac
+	local args=("${prlctl}" set "${VM_NAME}" --device-set "${device}")
+
+	type="$(vm_get_cfg "${prefix}_TYPE")"
+	iface="$(vm_get_cfg "${prefix}_PRL_IFACE")"
+	mac="$(vm_get_cfg "${prefix}_MAC")"
+
+	args+=(--type "${type}")
+	[ -n "${iface}" ] && args+=(--iface "${iface}")
+	[ -n "${mac}" ] && args+=(--mac "${mac}")
+	args+=(--dhcp no --dhcp6 no --configure no --adapter-type virtio)
+
+	if [ "${VM_DRY_RUN}" = "1" ]; then
+		vm_run "${args[@]}"
+		return 0
+	fi
+
+	if ! "${args[@]}" 1>/dev/null 2>&1; then
+		args=("${prlctl}" set "${VM_NAME}" --device-add "${add_device}" --type "${type}")
+		[ -n "${iface}" ] && args+=(--iface "${iface}")
+		[ -n "${mac}" ] && args+=(--mac "${mac}")
+		args+=(--dhcp no --dhcp6 no --configure no --adapter-type virtio)
+		vm_run "${args[@]}" || vm_fatal "Failed to add network adapter ${device}"
+	else
+		args=("${prlctl}" set "${VM_NAME}" --device-set "${device}" --type "${type}")
+		[ -n "${iface}" ] && args+=(--iface "${iface}")
+		[ -n "${mac}" ] && args+=(--mac "${mac}")
+		args+=(--dhcp no --dhcp6 no --configure no --adapter-type virtio)
+		vm_run "${args[@]}" || vm_fatal "Failed to configure network adapter ${device}"
+	fi
+}
+
+function vm_attach_network_adapters() {
+	local prlctl="${1}"
+	local idx count
+
+	count="${VM_NET_COUNT:-0}"
+	for ((idx = 0; idx < count; idx++)); do
+		vm_prl_ensure_net "${prlctl}" "${idx}"
+	done
+}
+
 function vm_create_vm_shell() {
 	local prlctl="${1}"
 	local existing_home
@@ -799,8 +970,8 @@ function vm_attach_boot_media() {
 
 	vm_prepare_boot_disk_paths
 	vm_prl_set "${prlctl}" --cpus "${VM_CPUS}" --memsize "${VM_MEMORY_MB}" --efi-boot on
-	vm_prl_set "${prlctl}" --device-set net0 --type shared --adapter-type virtio
-	vm_prl_set "${prlctl}" --device-set hdd0 --image "${VM_BOOT_IMAGE_FILE}" --online-compact "${PRL_HDD_ONLINE_COMPACT}"
+	vm_attach_network_adapters "${prlctl}"
+	vm_prl_set "${prlctl}" --device-set hdd0 --image "${VM_VM_DISK_PATH}" --online-compact "${PRL_HDD_ONLINE_COMPACT}"
 	vm_prl_set "${prlctl}" --device-set cdrom0 --image "${VM_SEED_ISO}" --connect
 }
 
@@ -817,6 +988,7 @@ function vm_create() {
 		[ -f "${VM_SEED_ISO}" ] || vm_fatal "Seed ISO not found: ${VM_SEED_ISO}"
 	fi
 	vm_create_vm_shell "${prlctl}"
+	vm_clone_boot_disk
 	vm_attach_boot_media "${prlctl}"
 	vm_apply_prl_config
 
@@ -829,7 +1001,8 @@ VM prepared: ${VM_NAME}
   CPUs:        ${VM_CPUS}
   RAM (MB):    ${VM_MEMORY_MB}
   Image file:  ${VM_IMAGE_FILE}
-  Boot disk:   ${VM_BOOT_IMAGE_FILE}
+  Base disk:   ${VM_BOOT_IMAGE_FILE}
+  VM disk:     ${VM_VM_DISK_PATH}
   Seed ISO:    ${VM_SEED_ISO}
   VM bundle:   ${VM_BUNDLE_PATH}
 __EOF__
@@ -842,11 +1015,41 @@ function vm_boot() {
 	vm_run "${prlctl}" start "${VM_NAME}" || vm_fatal "Failed to start VM: ${VM_NAME}"
 }
 
+function vm_tools_update() {
+	local prlctl
+
+	prlctl="$(vm_parallels_bin)"
+	[ -x "${prlctl}" ] || vm_fatal "Parallels CLI not found: ${prlctl}"
+
+	if [ "${VM_DRY_RUN}" != "1" ] && ! vm_exists; then
+		vm_fatal "VM is not registered in Parallels: ${VM_NAME}"
+	fi
+
+	vm_run "${prlctl}" installtools "${VM_NAME}" \
+		|| vm_fatal "Failed to trigger Parallels Tools install/update for ${VM_NAME}"
+
+	cat <<__EOF__
+Triggered Parallels Tools install/update for ${VM_NAME}.
+
+Notes:
+  - The VM must be running for this to work.
+  - This is intended as a manual maintenance step after kernel upgrades.
+  - Linux guests typically need a reboot after Tools are installed or updated.
+__EOF__
+}
+
 function vm_down() {
 	local prlctl
 	prlctl="$(vm_parallels_bin)"
 	[ -x "${prlctl}" ] || vm_fatal "Parallels CLI not found: ${prlctl}"
 	vm_run "${prlctl}" stop "${VM_NAME}" || vm_fatal "Failed to stop VM: ${VM_NAME}"
+}
+
+function vm_kill() {
+	local prlctl
+	prlctl="$(vm_parallels_bin)"
+	[ -x "${prlctl}" ] || vm_fatal "Parallels CLI not found: ${prlctl}"
+	vm_run "${prlctl}" stop "${VM_NAME}" --kill || vm_fatal "Failed to force-stop VM: ${VM_NAME}"
 }
 
 function vm_destroy() {
