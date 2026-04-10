@@ -136,6 +136,7 @@ function vm_resolve_vm_defaults() {
 	VM_KEYBOARD_VC_KEYMAP="${VM_KEYBOARD_VC_KEYMAP:-gb}"
 	VM_K8S_CHANNEL="${VM_K8S_CHANNEL:-v1.35}"
 	VM_CHRONY_MAKESTEP="${VM_CHRONY_MAKESTEP:-1.0 3}"
+	VM_DISABLE_FIREWALLD="${VM_DISABLE_FIREWALLD:-true}"
 	VM_PRL_DISTRIBUTION="${VM_PRL_DISTRIBUTION:-fedora}"
 	HOST_ARCH="${HOST_ARCH:-$(vm_guess_arch)}"
 	VM_ARCH="${VM_ARCH:-${HOST_ARCH}}"
@@ -453,6 +454,7 @@ function vm_prepare_boot_disk_paths() {
 	VM_IMPORT_HDS_FILE="${VM_IMPORT_HDS_FILE:-${VM_CONVERTED_DIR}/${disk_suffix}.hds}"
 	VM_BOOT_IMAGE_FILE="${VM_BOOT_IMAGE_FILE:-${VM_CONVERTED_DIR}/${disk_suffix}.hdd}"
 	VM_BOOT_IMAGE_CHECKSUM_FILE="${VM_BOOT_IMAGE_CHECKSUM_FILE:-${VM_CONVERTED_DIR}/${disk_suffix}.sha256}"
+	VM_BOOT_IMAGE_METADATA_FILE="${VM_BOOT_IMAGE_METADATA_FILE:-${VM_CONVERTED_DIR}/${disk_suffix}.metadata}"
 }
 
 function vm_cleanup_import_intermediates() {
@@ -466,6 +468,37 @@ function vm_write_boot_disk_checksum() {
 			shasum -a 256 "${file#./}"
 		done > "${VM_BOOT_IMAGE_CHECKSUM_FILE}"
 	) || vm_fatal "Failed to write boot disk checksum: ${VM_BOOT_IMAGE_CHECKSUM_FILE}"
+}
+
+function vm_write_boot_disk_metadata() {
+	cat >"${VM_BOOT_IMAGE_METADATA_FILE}" <<__EOF__ || vm_fatal "Failed to write boot disk metadata: ${VM_BOOT_IMAGE_METADATA_FILE}"
+BOOT_IMAGE_FORMAT_VERSION=2
+BOOT_IMAGE_NAME=${VM_IMAGE_NAME}
+BOOT_DISK_GB=${VM_DISK_GB}
+BOOT_VM_ARCH=${VM_ARCH}
+__EOF__
+}
+
+function vm_verify_boot_disk_metadata() {
+	[ -f "${VM_BOOT_IMAGE_METADATA_FILE}" ] || return 1
+
+	local metadata_version=""
+	local metadata_image_name=""
+	local metadata_disk_gb=""
+	local metadata_arch=""
+
+	# shellcheck disable=SC1090
+	. "${VM_BOOT_IMAGE_METADATA_FILE}" || return 1
+
+	metadata_version="${BOOT_IMAGE_FORMAT_VERSION:-}"
+	metadata_image_name="${BOOT_IMAGE_NAME:-}"
+	metadata_disk_gb="${BOOT_DISK_GB:-}"
+	metadata_arch="${BOOT_VM_ARCH:-}"
+
+	[ "${metadata_version}" = "2" ] || return 1
+	[ "${metadata_image_name}" = "${VM_IMAGE_NAME}" ] || return 1
+	[ "${metadata_disk_gb}" = "${VM_DISK_GB}" ] || return 1
+	[ "${metadata_arch}" = "${VM_ARCH}" ] || return 1
 }
 
 function vm_verify_boot_disk_checksum() {
@@ -492,13 +525,13 @@ function vm_prepare_boot_disk() {
 	vm_prepare_boot_disk_paths
 
 	if [ -d "${VM_BOOT_IMAGE_FILE}" ]; then
-		if vm_verify_boot_disk_checksum; then
+		if vm_verify_boot_disk_metadata && vm_verify_boot_disk_checksum; then
 			vm_info "Verified cached Parallels boot disk: ${VM_BOOT_IMAGE_FILE}"
 			return 0
 		fi
 
-		echo "Cached Parallels boot disk failed checksum verification; rebuilding."
-		[ "${VM_DRY_RUN}" = "1" ] || rm -rf "${VM_BOOT_IMAGE_FILE}" "${VM_BOOT_IMAGE_CHECKSUM_FILE}"
+		echo "Cached Parallels boot disk failed validation; rebuilding."
+		[ "${VM_DRY_RUN}" = "1" ] || rm -rf "${VM_BOOT_IMAGE_FILE}" "${VM_BOOT_IMAGE_CHECKSUM_FILE}" "${VM_BOOT_IMAGE_METADATA_FILE}"
 	fi
 
 	if [ ! -f "${VM_IMAGE_FILE}" ]; then
@@ -533,6 +566,7 @@ function vm_prepare_boot_disk() {
 		|| vm_fatal "Failed to populate Parallels disk payload: ${payload_file}"
 
 	[ "${VM_DRY_RUN}" = "1" ] || vm_write_boot_disk_checksum
+	[ "${VM_DRY_RUN}" = "1" ] || vm_write_boot_disk_metadata
 	[ "${VM_DRY_RUN}" = "1" ] || vm_cleanup_import_intermediates
 
 	echo "Prepared Parallels boot disk: ${VM_BOOT_IMAGE_FILE}"
@@ -661,6 +695,99 @@ function vm_render_network_config() {
 	done
 }
 
+function vm_render_nmconnection_ipv4_block() {
+	local method="${1}"
+	local address="${2}"
+	local gateway="${3}"
+	local dns="${4}"
+	local metric="${5}"
+	local never_default="${6}"
+
+	printf "[ipv4]\n"
+	case "${method}" in
+		static)
+			printf "method=manual\n"
+			if [ -n "${gateway}" ]; then
+				printf "address1=%s,%s\n" "${address}" "${gateway}"
+			else
+				printf "address1=%s\n" "${address}"
+			fi
+			[ -n "${dns}" ] && printf "dns=%s;\n" "${dns}"
+			[ -n "${metric}" ] && printf "route-metric=%s\n" "${metric}"
+			[ "${never_default}" = "yes" ] && printf "never-default=true\n"
+			;;
+		disabled)
+			printf "method=disabled\n"
+			;;
+		*)
+			printf "method=auto\n"
+			;;
+	esac
+}
+
+function vm_render_nmconnection_content() {
+	local idx="${1}"
+	local prefix="VM_NET_${idx}"
+	local name mac method address gateway dns metric never_default
+
+	name="$(vm_get_cfg "${prefix}_NAME")"
+	mac="$(vm_normalize_mac "$(vm_get_cfg "${prefix}_MAC")")"
+	method="$(vm_get_cfg "${prefix}_IPV4_METHOD")"
+	address="$(vm_get_cfg "${prefix}_IPV4_ADDRESS")"
+	gateway="$(vm_get_cfg "${prefix}_IPV4_GATEWAY")"
+	dns="$(vm_get_cfg "${prefix}_IPV4_DNS")"
+	metric="$(vm_get_cfg "${prefix}_ROUTE_METRIC")"
+	never_default="$(vm_get_cfg "${prefix}_NEVER_DEFAULT")"
+
+	printf "[connection]\n"
+	printf "id=%s\n" "${name}"
+	printf "type=ethernet\n"
+	printf "autoconnect=true\n"
+	printf "interface-name=%s\n" "${name}"
+	printf "\n[ethernet]\n"
+	printf "mac-address=%s\n" "${mac}"
+	printf "\n"
+	vm_render_nmconnection_ipv4_block "${method}" "${address}" "${gateway}" "${dns}" "${metric}" "${never_default}"
+	printf "\n[ipv6]\n"
+	printf "method=ignore\n"
+}
+
+function vm_render_nmconnection_files() {
+	local idx count name
+
+	count="${VM_NET_COUNT:-0}"
+	for ((idx = 0; idx < count; idx++)); do
+		name="$(vm_get_cfg "VM_NET_${idx}_NAME")"
+		printf "  - path: /etc/NetworkManager/system-connections/%s.nmconnection\n" "${name}"
+		printf "    permissions: \"0600\"\n"
+		printf "    owner: root:root\n"
+		printf "    content: |\n"
+		vm_render_nmconnection_content "${idx}" | sed 's/^/      /'
+	done
+}
+
+function vm_render_nmcli_apply_cmds() {
+	local idx count name
+
+	printf "  - [ sh, -c, \"nmcli connection reload || true\" ]\n"
+
+	count="${VM_NET_COUNT:-0}"
+	for ((idx = 0; idx < count; idx++)); do
+		name="$(vm_get_cfg "VM_NET_${idx}_NAME")"
+		printf "  - [ sh, -c, \"nmcli connection up '%s' || true\" ]\n" "${name}"
+	done
+
+	printf "  - [ sh, -c, \"nmcli connection delete 'cloud-init enp0s5' || true\" ]\n"
+	printf "  - [ sh, -c, \"nmcli connection delete 'Wired connection 1' || true\" ]\n"
+	printf "  - [ sh, -c, \"nmcli connection delete 'Wired connection 2' || true\" ]\n"
+	printf "  - [ sh, -c, \"nmcli connection delete 'Wired connection 3' || true\" ]\n"
+}
+
+function vm_render_firewalld_runcmd() {
+	[ "${VM_DISABLE_FIREWALLD}" = "true" ] || return 0
+	printf "  - [ sh, -c, \"systemctl stop firewalld || true\" ]\n"
+}
+
 function vm_expand_template() {
 	local template_path="${1}"
 	local ssh_key="${2}"
@@ -678,6 +805,18 @@ function vm_expand_template() {
 				;;
 			"__VM_NETWORK_CONFIG__")
 				vm_render_network_config
+				continue
+				;;
+			"__VM_NMCONNECTION_FILES__")
+				vm_render_nmconnection_files
+				continue
+				;;
+			"__VM_NMCLI_APPLY_CMDS__")
+				vm_render_nmcli_apply_cmds
+				continue
+				;;
+			"__VM_FIREWALLD_RUNCMD__")
+				vm_render_firewalld_runcmd
 				continue
 				;;
 		esac
@@ -735,6 +874,28 @@ function vm_create_seed_iso() {
 		|| vm_fatal "Failed to create cloud-init seed ISO"
 
 	echo "Created seed ISO: ${VM_SEED_ISO}"
+}
+
+function vm_kill_destroy() {
+	vm_kill
+	vm_destroy
+}
+
+function vm_stop_destroy() {
+	vm_down
+	vm_destroy
+}
+
+function vm_create_boot() {
+	vm_create
+	vm_boot
+}
+
+function vm_full_recycle() {
+	vm_kill
+	vm_destroy
+	vm_create
+	vm_boot
 }
 
 function vm_parallels_bin() {

@@ -3,5 +3,8 @@ results
 mkbld.tmp.*
 mkbld.manifest.*
 buildroot
-.cache
+.cache/
+.DS_Store
+.AppleDouble
+._*
 *.pvm

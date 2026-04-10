@@ -68,11 +68,14 @@ write_files:
     permissions: "0644"
     content: |
       makestep __VM_CHRONY_MAKESTEP__
+__VM_NMCONNECTION_FILES__
 
 runcmd:
-  - [ dnf, config-manager, addrepo, --from-repofile, https://download.docker.com/linux/fedora/docker-ce.repo ]
+__VM_NMCLI_APPLY_CMDS__
+  - [ dnf, config-manager, addrepo, --from-repofile, "https://download.docker.com/linux/fedora/docker-ce.repo" ]
   - [ localectl, set-keymap, __VM_KEYBOARD_VC_KEYMAP__ ]
 __VM_LOCALectl_X11_CMD__
+__VM_FIREWALLD_RUNCMD__
   - [ systemctl, enable, --now, chronyd ]
   - [ systemctl, enable, --now, sshd ]
   - [ sh, -c, "echo 'done' > /var/lib/cloud/instance/devbox-ready" ]

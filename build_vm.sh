@@ -18,12 +18,16 @@ Commands:
   image         Download and prepare the Fedora boot image
   seed          Generate cloud-init seed media
   create        Create the Parallels VM
+  create-boot   Create and then start the VM
   prl-config    Apply Parallels VM settings to an existing VM
   tools-update  Trigger a manual Parallels Tools install/update
   boot          Start the VM
   down          Stop the VM
   kill          Force-stop the VM
+  stop-destroy  Stop and then delete the VM registration
+  kill-destroy  Force-stop and then delete the VM registration
   destroy       Delete the VM registration
+  full-recycle  Force-stop, delete, create, and start the VM
   status        Show VM status
   ssh-config    Print ssh config snippet for the VM
   up            Run image, seed, create, and boot
@@ -71,6 +75,10 @@ case "${VM_COMMAND}" in
 		vm_create
 		;;
 
+	create-boot)
+		vm_create_boot
+		;;
+
 	prl-config)
 		vm_apply_prl_config
 		;;
@@ -91,8 +99,20 @@ case "${VM_COMMAND}" in
 		vm_kill
 		;;
 
+	stop-destroy)
+		vm_stop_destroy
+		;;
+
+	kill-destroy)
+		vm_kill_destroy
+		;;
+
 	destroy|delete)
 		vm_destroy
+		;;
+
+	full-recycle)
+		vm_full_recycle
 		;;
 
 	status)
