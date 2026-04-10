@@ -9,6 +9,20 @@ function vm_info() {
 	echo "$@"
 }
 
+function vm_step() {
+	echo "==> $@"
+}
+
+function vm_progress_tick() {
+	[ "${VM_DRY_RUN}" = "1" ] && return 0
+	printf "."
+}
+
+function vm_progress_done() {
+	[ "${VM_DRY_RUN}" = "1" ] && return 0
+	printf "\n"
+}
+
 function vm_debug() {
 	[ "${VM_DEBUG}" = "1" ] && echo "DEBUG: $@"
 }
@@ -55,11 +69,69 @@ function vm_quote_cmd() {
 }
 
 function vm_run() {
-	vm_quote_cmd "$@"
-	printf "\n"
+	if [ "${VM_DRY_RUN}" = "1" ] || [ "${VM_VERBOSE}" = "1" ]; then
+		vm_quote_cmd "$@"
+		printf "\n"
+	fi
 
 	[ "${VM_DRY_RUN}" = "1" ] && return 0
 	"$@"
+}
+
+function vm_run_quiet() {
+	local output_file rc
+
+	if [ "${VM_DRY_RUN}" = "1" ] || [ "${VM_VERBOSE}" = "1" ]; then
+		vm_run "$@"
+		return $?
+	fi
+
+	output_file="$(mktemp "${TMPDIR:-/tmp}/builder-cmd.XXXXXX")" || vm_fatal "Failed to create temp file"
+
+	if "$@" >"${output_file}" 2>&1; then
+		rm -f "${output_file}"
+		return 0
+	fi
+
+	rc=$?
+	cat "${output_file}" >&2
+	rm -f "${output_file}"
+	return "${rc}"
+}
+
+function vm_try_quiet() {
+	local output_file rc
+
+	if [ "${VM_DRY_RUN}" = "1" ] || [ "${VM_VERBOSE}" = "1" ]; then
+		vm_run "$@"
+		return $?
+	fi
+
+	output_file="$(mktemp "${TMPDIR:-/tmp}/builder-cmd.XXXXXX")" || vm_fatal "Failed to create temp file"
+
+	if "$@" >"${output_file}" 2>&1; then
+		rm -f "${output_file}"
+		return 0
+	fi
+
+	rc=$?
+	rm -f "${output_file}"
+	return "${rc}"
+}
+
+function vm_prl_info_json() {
+	local prlctl="${1}"
+
+	"${prlctl}" list --info "${VM_NAME}" --json
+}
+
+function vm_prl_device_exists() {
+	local prlctl="${1}"
+	local device="${2}"
+	local info_json
+
+	info_json="$(vm_prl_info_json "${prlctl}")" || return 1
+	printf "%s\n" "${info_json}" | jq -e --arg device "${device}" '.[0].Hardware[$device] != null' >/dev/null 2>&1
 }
 
 function vm_guess_arch() {
@@ -192,7 +264,7 @@ function vm_resolve_vm_defaults() {
 	VM_SSH_HOST_ALIAS="${VM_SSH_HOST_ALIAS:-${VM_NAME}}"
 	VM_SSH_HOSTNAME="${VM_SSH_HOSTNAME:-${VM_NET_0_IPV4_ADDRESS%%/*}}"
 	VM_SSH_CONFIG_DIR="${VM_SSH_CONFIG_DIR:-${VM_CACHE_DIR}/ssh-config.d}"
-	VM_SSH_CONFIG_BASENAME="${VM_SSH_CONFIG_BASENAME:-builder.conf}"
+	VM_SSH_CONFIG_BASENAME="${VM_SSH_CONFIG_BASENAME:-${VM_SSH_HOST_ALIAS}.conf}"
 	VM_SSH_CONFIG_PATH="${VM_SSH_CONFIG_PATH:-${VM_SSH_CONFIG_DIR}/${VM_SSH_CONFIG_BASENAME}}"
 	VM_CONVERTED_DIR="${VM_CONVERTED_DIR:-${VM_IMAGE_DIR}/converted}"
 	VM_RECREATE="${VM_RECREATE:-0}"
@@ -250,6 +322,7 @@ function vm_init_defaults() {
 	[ -n "${BASEPATH}" ] || vm_fatal "BASEPATH is undefined"
 
 	VM_DRY_RUN="${VM_DRY_RUN:-${VM_DRY_RUN_DEFAULT:-0}}"
+	VM_VERBOSE="${VM_VERBOSE:-${VM_VERBOSE_DEFAULT:-0}}"
 	VM_DEBUG="${VM_DEBUG:-${VM_DEBUG_DEFAULT:-0}}"
 	VM_FEDORA_RELEASE="${VM_FEDORA_RELEASE:-43}"
 	VM_TARGET="${VM_TARGET:-$(vm_target_name)}"
@@ -262,9 +335,16 @@ function vm_init_defaults() {
 
 function vm_parse_args() {
 	VM_COMMAND="help"
+	VM_ACTIONS=""
 
 	while [ "$#" -gt 0 ]; do
 		case "${1}" in
+			--action|--actions)
+				[ -n "${2}" ] || vm_fatal "${1} requires a value"
+				VM_ACTIONS="${2}"
+				shift 2
+				;;
+
 			--name|--instance-name)
 				[ -n "${2}" ] || vm_fatal "${1} requires a value"
 				VM_NAME="${2}"
@@ -305,6 +385,11 @@ function vm_parse_args() {
 				shift
 				;;
 
+			--verbose|-v)
+				VM_VERBOSE=1
+				shift
+				;;
+
 			--upgrade)
 				VM_PACKAGE_UPDATE=true
 				VM_PACKAGE_UPGRADE=true
@@ -341,7 +426,9 @@ function vm_parse_args() {
 		esac
 	done
 
-	if [ "$#" -gt 0 ]; then
+	if [ -n "${VM_ACTIONS}" ]; then
+		VM_COMMAND="action-list"
+	elif [ "$#" -gt 0 ]; then
 		VM_COMMAND="${1}"
 	else
 		VM_COMMAND="help"
@@ -476,6 +563,7 @@ function vm_read_ssh_key() {
 function vm_download_image() {
 	vm_require_cmd curl
 	vm_ensure_dirs
+	vm_step "Resolving Fedora image artifacts"
 	vm_resolve_image_artifacts
 
 	if [ -f "${VM_IMAGE_FILE}" ] && [ -f "${VM_CHECKSUM_FILE}" ]; then
@@ -484,9 +572,9 @@ function vm_download_image() {
 		return 0
 	fi
 
-	echo "Downloading Fedora cloud image ..."
-	echo "Image URL: ${VM_IMAGE_URL}"
-	echo "Checksum URL: ${VM_CHECKSUM_URL}"
+	vm_step "Downloading Fedora cloud image"
+	vm_debug "Image URL: ${VM_IMAGE_URL}"
+	vm_debug "Checksum URL: ${VM_CHECKSUM_URL}"
 
 	vm_run curl --fail --location --silent --show-error "${VM_IMAGE_URL}" -o "${VM_IMAGE_FILE}" \
 		|| vm_fatal "Download failed: ${VM_IMAGE_URL}"
@@ -495,7 +583,7 @@ function vm_download_image() {
 
 	[ "${VM_DRY_RUN}" = "1" ] || vm_verify_downloaded_image
 
-	echo "Saved: ${VM_IMAGE_FILE}"
+	vm_info "Saved image: ${VM_IMAGE_FILE}"
 }
 
 function vm_hdd_payload_file() {
@@ -600,10 +688,10 @@ function vm_prepare_boot_disk() {
 		vm_download_image
 	fi
 
-	echo "Preparing Parallels boot disk ..."
-	echo "Source image: ${VM_IMAGE_FILE}"
-	echo "Disk size:    ${disk_size}"
-	echo "Target disk:  ${VM_BOOT_IMAGE_FILE}"
+	vm_step "Preparing reusable Parallels boot disk"
+	vm_debug "Source image: ${VM_IMAGE_FILE}"
+	vm_debug "Disk size: ${disk_size}"
+	vm_debug "Target disk: ${VM_BOOT_IMAGE_FILE}"
 
 	vm_run cp "${VM_IMAGE_FILE}" "${VM_IMPORT_QCOW2_FILE}" \
 		|| vm_fatal "Failed to stage qcow2 for import: ${VM_IMPORT_QCOW2_FILE}"
@@ -631,13 +719,14 @@ function vm_prepare_boot_disk() {
 	[ "${VM_DRY_RUN}" = "1" ] || vm_write_boot_disk_metadata
 	[ "${VM_DRY_RUN}" = "1" ] || vm_cleanup_import_intermediates
 
-	echo "Prepared Parallels boot disk: ${VM_BOOT_IMAGE_FILE}"
+	vm_info "Prepared Parallels boot disk: ${VM_BOOT_IMAGE_FILE}"
 }
 
 function vm_clone_boot_disk() {
 	vm_require_cmd cp
 	vm_require_cmd rm
 
+	vm_step "Cloning VM boot disk"
 	vm_prepare_boot_disk_paths
 	[ -d "${VM_BOOT_IMAGE_FILE}" ] || vm_fatal "Base boot disk not found: ${VM_BOOT_IMAGE_FILE}"
 	if [ "${VM_DRY_RUN}" != "1" ]; then
@@ -648,7 +737,7 @@ function vm_clone_boot_disk() {
 	vm_run cp -R "${VM_BOOT_IMAGE_FILE}" "${VM_VM_DISK_PATH}" \
 		|| vm_fatal "Failed to clone base boot disk into VM bundle: ${VM_VM_DISK_PATH}"
 
-	echo "Cloned VM boot disk: ${VM_VM_DISK_PATH}"
+	vm_info "Cloned VM boot disk: ${VM_VM_DISK_PATH}"
 }
 
 function vm_render_keyboard_block() {
@@ -729,11 +818,14 @@ function vm_wait_for_ssh_up() {
 
 	while [ "${SECONDS}" -lt "${deadline}" ]; do
 		if ssh "${ssh_args[@]}" "${VM_USERNAME}@${VM_SSH_HOSTNAME}" true 1>/dev/null 2>&1; then
+			vm_progress_done
 			return 0
 		fi
+		vm_progress_tick
 		sleep 2
 	done
 
+	vm_progress_done
 	return 1
 }
 
@@ -747,16 +839,24 @@ function vm_wait_for_ssh_down() {
 
 	while [ "${SECONDS}" -lt "${deadline}" ]; do
 		if ! ssh "${ssh_args[@]}" "${VM_USERNAME}@${VM_SSH_HOSTNAME}" true 1>/dev/null 2>&1; then
+			vm_progress_done
 			return 0
 		fi
+		vm_progress_tick
 		sleep 2
 	done
 
+	vm_progress_done
 	return 1
 }
 
 function vm_wait_for_guest_ready() {
 	local deadline=$((SECONDS + 1800))
+	local ssh_args=()
+
+	while IFS= read -r arg; do
+		ssh_args+=("${arg}")
+	done < <(vm_ssh_base_args)
 
 	vm_wait_for_ssh_up || return 1
 
@@ -764,15 +864,19 @@ function vm_wait_for_guest_ready() {
 		if ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 \
 			"${VM_USERNAME}@${VM_SSH_HOSTNAME}" \
 			"test -f /var/lib/cloud/instance/devbox-ready" 1>/dev/null 2>&1; then
+			vm_progress_done
 			return 0
 		fi
 
-		if ! vm_wait_for_ssh_up; then
+		if ! ssh "${ssh_args[@]}" "${VM_USERNAME}@${VM_SSH_HOSTNAME}" true 1>/dev/null 2>&1; then
+			vm_progress_done
 			return 1
 		fi
+		vm_progress_tick
 		sleep 5
 	done
 
+	vm_progress_done
 	return 1
 }
 
@@ -795,13 +899,6 @@ function vm_wait_for_upgrade_cycle() {
 	local running_kernel default_kernel
 
 	[ "${VM_DRY_RUN}" = "1" ] && return 0
-	[ "${VM_WAIT_FOR_UPGRADE}" = "1" ] || return 0
-
-	echo "Waiting for guest SSH on ${VM_SSH_HOSTNAME}..."
-	vm_wait_for_ssh_up || vm_fatal "Timed out waiting for SSH on ${VM_SSH_HOSTNAME}"
-
-	echo "Waiting for cloud-init to finish inside ${VM_NAME}..."
-	vm_wait_for_guest_ready || vm_fatal "Timed out waiting for cloud-init completion in ${VM_NAME}"
 
 	running_kernel="$(vm_running_kernel_release)"
 	default_kernel="$(vm_default_kernel_release)"
@@ -814,6 +911,22 @@ function vm_wait_for_upgrade_cycle() {
 		running_kernel="$(vm_running_kernel_release)"
 		[ "${running_kernel}" = "${default_kernel}" ] || vm_fatal "Guest reboot completed but kernel is still ${running_kernel}, expected ${default_kernel}"
 	fi
+}
+
+function vm_wait_ready() {
+	[ "${VM_DRY_RUN}" = "1" ] && {
+		vm_info "Would wait for SSH and cloud-init completion on ${VM_SSH_HOSTNAME}"
+		vm_info "Would also wait through any required kernel reboot cycle"
+		return 0
+	}
+
+	echo "Waiting for guest SSH on ${VM_SSH_HOSTNAME}..."
+	vm_wait_for_ssh_up || vm_fatal "Timed out waiting for SSH on ${VM_SSH_HOSTNAME}"
+
+	echo "Waiting for cloud-init to finish inside ${VM_NAME}..."
+	vm_wait_for_guest_ready || vm_fatal "Timed out waiting for cloud-init completion in ${VM_NAME}"
+
+	vm_wait_for_upgrade_cycle
 }
 
 function vm_network_dns_count() {
@@ -1036,6 +1149,7 @@ function vm_render_template() {
 }
 
 function vm_create_seed_iso() {
+	vm_step "Rendering cloud-init seed"
 	vm_require_cmd hdiutil
 	vm_ensure_dirs
 
@@ -1067,7 +1181,7 @@ function vm_create_seed_iso() {
 		"${VM_SEED_DIR}" \
 		|| vm_fatal "Failed to create cloud-init seed ISO"
 
-	echo "Created seed ISO: ${VM_SEED_ISO}"
+	vm_info "Created seed ISO: ${VM_SEED_ISO}"
 }
 
 function vm_kill_destroy() {
@@ -1083,7 +1197,7 @@ function vm_stop_destroy() {
 function vm_create_boot() {
 	vm_create
 	vm_boot
-	vm_wait_for_upgrade_cycle
+	vm_wait_ready
 }
 
 function vm_full_recycle() {
@@ -1091,7 +1205,7 @@ function vm_full_recycle() {
 	vm_destroy
 	vm_create
 	vm_boot
-	vm_wait_for_upgrade_cycle
+	vm_wait_ready
 }
 
 function vm_parallels_bin() {
@@ -1121,7 +1235,7 @@ function vm_existing_home_path() {
 function vm_prl_set() {
 	local prlctl="${1}"
 	shift
-	vm_run "${prlctl}" set "${VM_NAME}" "$@" || vm_fatal "prlctl set failed: ${VM_NAME} $*"
+	vm_run_quiet "${prlctl}" set "${VM_NAME}" "$@" || vm_fatal "prlctl set failed: ${VM_NAME} $*"
 }
 
 function vm_prl_ensure_share() {
@@ -1140,10 +1254,12 @@ function vm_prl_ensure_share() {
 		return 0
 	fi
 
-	if ! "${prlctl}" set "${VM_NAME}" --shf-host-set "${name}" --path "${path}" --mode "${mode}" --enable 1>/dev/null 2>&1; then
-		vm_run "${prlctl}" set "${VM_NAME}" --shf-host-add "${name}" --path "${path}" --mode "${mode}" --enable \
+	if ! vm_try_quiet "${prlctl}" set "${VM_NAME}" --shf-host-set "${name}" --path "${path}" --mode "${mode}" --enable; then
+		vm_run_quiet "${prlctl}" set "${VM_NAME}" --shf-host-add "${name}" --path "${path}" --mode "${mode}" --enable \
 			|| vm_fatal "Failed to add shared folder ${name}: ${path}"
 	fi
+
+	vm_info "Configured shared folder: ${name}"
 }
 
 function vm_apply_prl_config() {
@@ -1248,35 +1364,36 @@ function vm_prl_ensure_net() {
 	local device="net${index}"
 	local add_device="net"
 	local type iface mac
-	local args=("${prlctl}" set "${VM_NAME}" --device-set "${device}")
+	local args
 
 	type="$(vm_get_cfg "${prefix}_TYPE")"
 	iface="$(vm_get_cfg "${prefix}_PRL_IFACE")"
 	mac="$(vm_get_cfg "${prefix}_MAC")"
 
-	args+=(--type "${type}")
-	[ -n "${iface}" ] && args+=(--iface "${iface}")
-	[ -n "${mac}" ] && args+=(--mac "${mac}")
-	args+=(--dhcp no --dhcp6 no --configure no --adapter-type virtio)
-
 	if [ "${VM_DRY_RUN}" = "1" ]; then
-		vm_run "${args[@]}"
-		return 0
-	fi
-
-	if ! "${args[@]}" 1>/dev/null 2>&1; then
-		args=("${prlctl}" set "${VM_NAME}" --device-add "${add_device}" --type "${type}")
-		[ -n "${iface}" ] && args+=(--iface "${iface}")
-		[ -n "${mac}" ] && args+=(--mac "${mac}")
-		args+=(--dhcp no --dhcp6 no --configure no --adapter-type virtio)
-		vm_run "${args[@]}" || vm_fatal "Failed to add network adapter ${device}"
-	else
 		args=("${prlctl}" set "${VM_NAME}" --device-set "${device}" --type "${type}")
 		[ -n "${iface}" ] && args+=(--iface "${iface}")
 		[ -n "${mac}" ] && args+=(--mac "${mac}")
 		args+=(--dhcp no --dhcp6 no --configure no --adapter-type virtio)
-		vm_run "${args[@]}" || vm_fatal "Failed to configure network adapter ${device}"
+		vm_run "${args[@]}"
+		return 0
 	fi
+
+	if vm_prl_device_exists "${prlctl}" "${device}"; then
+		args=("${prlctl}" set "${VM_NAME}" --device-set "${device}" --type "${type}")
+		[ -n "${iface}" ] && args+=(--iface "${iface}")
+		[ -n "${mac}" ] && args+=(--mac "${mac}")
+		args+=(--dhcp no --dhcp6 no --configure no --adapter-type virtio)
+		vm_run_quiet "${args[@]}" || vm_fatal "Failed to configure network adapter ${device}"
+	else
+		args=("${prlctl}" set "${VM_NAME}" --device-add "${add_device}" --type "${type}")
+		[ -n "${iface}" ] && args+=(--iface "${iface}")
+		[ -n "${mac}" ] && args+=(--mac "${mac}")
+		args+=(--dhcp no --dhcp6 no --configure no --adapter-type virtio)
+		vm_run_quiet "${args[@]}" || vm_fatal "Failed to add network adapter ${device}"
+	fi
+
+	vm_info "Configured device: ${device} (${type})"
 }
 
 function vm_attach_network_adapters() {
@@ -1318,8 +1435,9 @@ __EOF__
 		fi
 	fi
 
-	vm_run "${prlctl}" create "${VM_NAME}" --distribution "${VM_PRL_DISTRIBUTION}" --dst "${VM_PARALLELS_DIR}" \
+	vm_run_quiet "${prlctl}" create "${VM_NAME}" --distribution "${VM_PRL_DISTRIBUTION}" --dst "${VM_PARALLELS_DIR}" \
 		|| vm_fatal "Failed to create VM shell: ${VM_NAME}"
+	vm_info "Created VM shell: ${VM_NAME}"
 }
 
 function vm_attach_boot_media() {
@@ -1327,14 +1445,18 @@ function vm_attach_boot_media() {
 
 	vm_prepare_boot_disk_paths
 	vm_prl_set "${prlctl}" --cpus "${VM_CPUS}" --memsize "${VM_MEMORY_MB}" --efi-boot on
+	vm_info "Configured VM hardware: ${VM_CPUS} CPU / ${VM_MEMORY_MB} MB RAM"
 	vm_attach_network_adapters "${prlctl}"
 	vm_prl_set "${prlctl}" --device-set hdd0 --image "${VM_VM_DISK_PATH}" --online-compact "${PRL_HDD_ONLINE_COMPACT}"
+	vm_info "Configured device: hdd0"
 	vm_prl_set "${prlctl}" --device-set cdrom0 --image "${VM_SEED_ISO}" --connect
+	vm_info "Configured device: cdrom0"
 }
 
 function vm_create() {
 	local prlctl
 
+	vm_step "Creating VM ${VM_NAME}"
 	prlctl="$(vm_parallels_bin)"
 	[ -x "${prlctl}" ] || vm_fatal "Parallels CLI not found: ${prlctl}"
 	vm_resolve_image_artifacts
@@ -1348,6 +1470,7 @@ function vm_create() {
 	vm_clone_boot_disk
 	vm_attach_boot_media "${prlctl}"
 	vm_apply_prl_config
+	vm_install_ssh_config
 
 	cat <<__EOF__
 VM prepared: ${VM_NAME}
@@ -1367,14 +1490,17 @@ __EOF__
 
 function vm_boot() {
 	local prlctl
+	vm_step "Starting VM ${VM_NAME}"
 	prlctl="$(vm_parallels_bin)"
 	[ -x "${prlctl}" ] || vm_fatal "Parallels CLI not found: ${prlctl}"
-	vm_run "${prlctl}" start "${VM_NAME}" || vm_fatal "Failed to start VM: ${VM_NAME}"
+	vm_run_quiet "${prlctl}" start "${VM_NAME}" || vm_fatal "Failed to start VM: ${VM_NAME}"
+	vm_info "Started VM: ${VM_NAME}"
 }
 
 function vm_tools_update() {
 	local prlctl
 
+	vm_step "Triggering Parallels Tools update for ${VM_NAME}"
 	prlctl="$(vm_parallels_bin)"
 	[ -x "${prlctl}" ] || vm_fatal "Parallels CLI not found: ${prlctl}"
 
@@ -1382,7 +1508,7 @@ function vm_tools_update() {
 		vm_fatal "VM is not registered in Parallels: ${VM_NAME}"
 	fi
 
-	vm_run "${prlctl}" installtools "${VM_NAME}" \
+	vm_run_quiet "${prlctl}" installtools "${VM_NAME}" \
 		|| vm_fatal "Failed to trigger Parallels Tools install/update for ${VM_NAME}"
 
 	cat <<__EOF__
@@ -1397,11 +1523,13 @@ __EOF__
 
 function vm_down() {
 	[ "${VM_DRY_RUN}" = "1" ] && {
+		vm_step "Requesting guest shutdown for ${VM_NAME}"
 		vm_run ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 \
 			"${VM_USERNAME}@${VM_SSH_HOSTNAME}" "sudo shutdown -P now"
 		return 0
 	}
 
+	vm_step "Requesting guest shutdown for ${VM_NAME}"
 	if ! vm_wait_for_ssh_up; then
 		vm_fatal "SSH is not reachable for ${VM_NAME}; use kill if you need to force-stop it."
 	fi
@@ -1415,16 +1543,21 @@ function vm_down() {
 
 function vm_kill() {
 	local prlctl
+	vm_step "Force-stopping VM ${VM_NAME}"
 	prlctl="$(vm_parallels_bin)"
 	[ -x "${prlctl}" ] || vm_fatal "Parallels CLI not found: ${prlctl}"
-	vm_run "${prlctl}" stop "${VM_NAME}" --kill || vm_fatal "Failed to force-stop VM: ${VM_NAME}"
+	vm_run_quiet "${prlctl}" stop "${VM_NAME}" --kill || vm_fatal "Failed to force-stop VM: ${VM_NAME}"
+	vm_info "Force-stopped VM: ${VM_NAME}"
 }
 
 function vm_destroy() {
 	local prlctl
+	vm_step "Deleting VM ${VM_NAME}"
 	prlctl="$(vm_parallels_bin)"
 	[ -x "${prlctl}" ] || vm_fatal "Parallels CLI not found: ${prlctl}"
-	vm_run "${prlctl}" delete "${VM_NAME}" || vm_fatal "Failed to delete VM: ${VM_NAME}"
+	vm_run_quiet "${prlctl}" delete "${VM_NAME}" || vm_fatal "Failed to delete VM: ${VM_NAME}"
+	vm_info "Deleted VM: ${VM_NAME}"
+	vm_remove_ssh_config
 }
 
 function vm_status() {
@@ -1447,6 +1580,7 @@ __EOF__
 function vm_install_ssh_config() {
 	local config_dir managed_begin managed_end temp_file
 
+	vm_step "Writing repo-local SSH config include"
 	config_dir="$(dirname "${VM_SSH_CONFIG_PATH}")"
 	managed_begin="# builder-vm:${VM_TARGET}:${VM_SSH_HOST_ALIAS}:begin"
 	managed_end="# builder-vm:${VM_TARGET}:${VM_SSH_HOST_ALIAS}:end"
@@ -1492,4 +1626,102 @@ function vm_install_ssh_config() {
 	vm_info "Updated SSH config: ${VM_SSH_CONFIG_PATH}"
 	vm_info "Add this to ~/.ssh/config if you have not already:"
 	vm_info "Include ${VM_SSH_CONFIG_DIR}/*.conf"
+}
+
+function vm_remove_ssh_config() {
+	if [ "${VM_DRY_RUN}" = "1" ]; then
+		vm_info "Would remove SSH config: ${VM_SSH_CONFIG_PATH}"
+		return 0
+	fi
+
+	[ -f "${VM_SSH_CONFIG_PATH}" ] || return 0
+	rm -f "${VM_SSH_CONFIG_PATH}" || vm_fatal "Failed to remove SSH config: ${VM_SSH_CONFIG_PATH}"
+	vm_info "Removed SSH config: ${VM_SSH_CONFIG_PATH}"
+}
+
+function vm_dispatch_action() {
+	local action="${1}"
+
+	case "${action}" in
+		image)
+			vm_download_image
+			vm_prepare_boot_disk
+			;;
+		seed)
+			vm_create_seed_iso
+			;;
+		create)
+			vm_create
+			;;
+		create-boot)
+			vm_create_boot
+			;;
+		prl-config)
+			vm_apply_prl_config
+			;;
+		tools-update|tools-install|install-tools)
+			vm_tools_update
+			;;
+		boot|start)
+			vm_boot
+			;;
+		wait|wait-ready)
+			vm_wait_ready
+			;;
+		down|stop)
+			vm_down
+			;;
+		kill|force-stop)
+			vm_kill
+			;;
+		stop-destroy)
+			vm_stop_destroy
+			;;
+		kill-destroy)
+			vm_kill_destroy
+			;;
+		destroy|delete)
+			vm_destroy
+			;;
+		full-recycle)
+			vm_full_recycle
+			;;
+		status)
+			vm_status
+			;;
+		ssh-config)
+			vm_install_ssh_config
+			;;
+		ssh-config-print)
+			vm_print_ssh_config
+			;;
+		up)
+			vm_download_image
+			vm_prepare_boot_disk
+			vm_create_seed_iso
+			vm_create
+			vm_boot
+			vm_wait_for_upgrade_cycle
+			;;
+		help|-h|--help)
+			return 2
+			;;
+		*)
+			vm_fatal "Unknown action: ${action}"
+			;;
+	esac
+}
+
+function vm_run_action_list() {
+	local actions_csv="${1}"
+	local action
+	local old_ifs="${IFS}"
+
+	IFS=','
+	for action in ${actions_csv}; do
+		action="$(printf "%s" "${action}" | awk '{$1=$1; print}')"
+		[ -n "${action}" ] || continue
+		vm_dispatch_action "${action}"
+	done
+	IFS="${old_ifs}"
 }

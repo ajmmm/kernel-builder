@@ -21,6 +21,7 @@ package_upgrade: __VM_PACKAGE_UPGRADE__
 package_reboot_if_required: __VM_PACKAGE_REBOOT_IF_REQUIRED__
 packages:
   - git
+  - htop
   - nano
   - vim
   - tmux

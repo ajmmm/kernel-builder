@@ -12,7 +12,7 @@ vm_init_defaults
 [ "${VM_DEBUG}" = "1" ] && set -x
 
 HELPTEXT=$(cat <<__EOF__
-${BASENAME} [--target <path>] [--name <vm-name>] [--upgrade|--no-upgrade] [--dry-run] [--debug] <command>
+${BASENAME} [--target <path>] [--name <vm-name>] [--upgrade|--no-upgrade] [--action <a,b,c>] [--dry-run] [--verbose] [--debug] <command>
 
 Commands:
   image         Download and prepare the Fedora boot image
@@ -28,6 +28,7 @@ Commands:
   kill-destroy  Force-stop and then delete the VM registration
   destroy       Delete the VM registration
   full-recycle  Force-stop, delete, create, and start the VM
+  wait-ready    Wait for SSH/cloud-init, and for upgrade reboot if enabled
   status        Show VM status
   ssh-config    Install or update the repo-local SSH include file for the VM
   ssh-config-print
@@ -42,8 +43,10 @@ Environment overrides:
   VM_CONFIG_FILE        Default: ./fc43/fedora/vm.conf
   PRL_CONFIG_FILE       Default: ./config/parallels.conf
   VM_DRY_RUN            Default: 0
+  VM_VERBOSE            Default: 0
   VM_DEBUG              Default: 0
   VM_WAIT_FOR_UPGRADE   Default: 0
+  VM_ACTIONS            Comma-separated action list for sequential execution
   VM_NAME               Default: from VM_CONFIG_FILE
   VM_HOSTNAME           Default: from VM_CONFIG_FILE
   VM_FQDN               Default: from VM_CONFIG_FILE
@@ -69,78 +72,80 @@ __EOF__
 )
 
 case "${VM_COMMAND}" in
+	action-list)
+		vm_run_action_list "${VM_ACTIONS}"
+		;;
+
 	image)
-		vm_download_image
-		vm_prepare_boot_disk
+		vm_dispatch_action image
 		;;
 
 	seed)
-		vm_create_seed_iso
+		vm_dispatch_action seed
 		;;
 
 	create)
-		vm_create
+		vm_dispatch_action create
 		;;
 
 	create-boot)
-		vm_create_boot
+		vm_dispatch_action create-boot
 		;;
 
 	prl-config)
-		vm_apply_prl_config
+		vm_dispatch_action prl-config
 		;;
 
 	tools-update|tools-install|install-tools)
-		vm_tools_update
+		vm_dispatch_action "${VM_COMMAND}"
 		;;
 
 	boot|start)
-		vm_boot
+		vm_dispatch_action "${VM_COMMAND}"
+		;;
+
+	wait|wait-ready)
+		vm_dispatch_action wait-ready
 		;;
 
 	down|stop)
-		vm_down
+		vm_dispatch_action "${VM_COMMAND}"
 		;;
 
 	kill|force-stop)
-		vm_kill
+		vm_dispatch_action "${VM_COMMAND}"
 		;;
 
 	stop-destroy)
-		vm_stop_destroy
+		vm_dispatch_action stop-destroy
 		;;
 
 	kill-destroy)
-		vm_kill_destroy
+		vm_dispatch_action kill-destroy
 		;;
 
 	destroy|delete)
-		vm_destroy
+		vm_dispatch_action "${VM_COMMAND}"
 		;;
 
 	full-recycle)
-		vm_full_recycle
+		vm_dispatch_action full-recycle
 		;;
 
 	status)
-		vm_status
+		vm_dispatch_action status
 		;;
 
 	ssh-config)
-		vm_install_ssh_config
+		vm_dispatch_action ssh-config
 		;;
 
 	ssh-config-print)
-		vm_print_ssh_config
+		vm_dispatch_action ssh-config-print
 		;;
 
 	up)
-		vm_download_image
-		vm_prepare_boot_disk
-		vm_create_seed_iso
-		vm_create
-		vm_boot
-		vm_wait_for_upgrade_cycle
+		vm_dispatch_action up
 		;;
 
 	help|-h|--help)
