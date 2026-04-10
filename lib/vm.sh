@@ -266,6 +266,8 @@ function vm_resolve_vm_defaults() {
 	VM_SSH_CONFIG_DIR="${VM_SSH_CONFIG_DIR:-${VM_CACHE_DIR}/ssh-config.d}"
 	VM_SSH_CONFIG_BASENAME="${VM_SSH_CONFIG_BASENAME:-${VM_SSH_HOST_ALIAS}.conf}"
 	VM_SSH_CONFIG_PATH="${VM_SSH_CONFIG_PATH:-${VM_SSH_CONFIG_DIR}/${VM_SSH_CONFIG_BASENAME}}"
+	VM_SSH_KNOWN_HOSTS_BASENAME="${VM_SSH_KNOWN_HOSTS_BASENAME:-${VM_SSH_HOST_ALIAS}.known_hosts}"
+	VM_SSH_KNOWN_HOSTS_PATH="${VM_SSH_KNOWN_HOSTS_PATH:-${VM_SSH_CONFIG_DIR}/${VM_SSH_KNOWN_HOSTS_BASENAME}}"
 	VM_CONVERTED_DIR="${VM_CONVERTED_DIR:-${VM_IMAGE_DIR}/converted}"
 	VM_RECREATE="${VM_RECREATE:-0}"
 }
@@ -792,8 +794,8 @@ function vm_ssh_identity_file() {
 function vm_ssh_base_args() {
 	printf "%s\n" \
 		"-o" "BatchMode=yes" \
-		"-o" "StrictHostKeyChecking=no" \
-		"-o" "UserKnownHostsFile=/dev/null" \
+		"-o" "StrictHostKeyChecking=accept-new" \
+		"-o" "UserKnownHostsFile=${VM_SSH_KNOWN_HOSTS_PATH}" \
 		"-o" "ConnectTimeout=5"
 }
 
@@ -861,7 +863,7 @@ function vm_wait_for_guest_ready() {
 	vm_wait_for_ssh_up || return 1
 
 	while [ "${SECONDS}" -lt "${deadline}" ]; do
-		if ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 \
+		if ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="${VM_SSH_KNOWN_HOSTS_PATH}" -o ConnectTimeout=5 \
 			"${VM_USERNAME}@${VM_SSH_HOSTNAME}" \
 			"test -f /var/lib/cloud/instance/devbox-ready" 1>/dev/null 2>&1; then
 			vm_progress_done
@@ -881,17 +883,17 @@ function vm_wait_for_guest_ready() {
 }
 
 function vm_running_kernel_release() {
-	ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 \
+	ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="${VM_SSH_KNOWN_HOSTS_PATH}" -o ConnectTimeout=5 \
 		"${VM_USERNAME}@${VM_SSH_HOSTNAME}" "uname -r" 2>/dev/null
 }
 
 function vm_default_kernel_release() {
-	ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 \
+	ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="${VM_SSH_KNOWN_HOSTS_PATH}" -o ConnectTimeout=5 \
 		"${VM_USERNAME}@${VM_SSH_HOSTNAME}" "basename \"\$(sudo grubby --default-kernel)\" | sed 's/^vmlinuz-//'" 2>/dev/null
 }
 
 function vm_guest_reboot() {
-	vm_run ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 \
+	vm_run ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="${VM_SSH_KNOWN_HOSTS_PATH}" -o ConnectTimeout=5 \
 		"${VM_USERNAME}@${VM_SSH_HOSTNAME}" "sudo shutdown -r now" || true
 }
 
@@ -1524,7 +1526,7 @@ __EOF__
 function vm_down() {
 	[ "${VM_DRY_RUN}" = "1" ] && {
 		vm_step "Requesting guest shutdown for ${VM_NAME}"
-		vm_run ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 \
+		vm_run ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="${VM_SSH_KNOWN_HOSTS_PATH}" -o ConnectTimeout=5 \
 			"${VM_USERNAME}@${VM_SSH_HOSTNAME}" "sudo shutdown -P now"
 		return 0
 	}
@@ -1534,7 +1536,7 @@ function vm_down() {
 		vm_fatal "SSH is not reachable for ${VM_NAME}; use kill if you need to force-stop it."
 	fi
 
-	vm_run ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 \
+	vm_run ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="${VM_SSH_KNOWN_HOSTS_PATH}" -o ConnectTimeout=5 \
 		"${VM_USERNAME}@${VM_SSH_HOSTNAME}" "sudo shutdown -P now" \
 		|| vm_fatal "Failed to request guest poweroff for ${VM_NAME}"
 
@@ -1573,6 +1575,7 @@ Host ${VM_SSH_HOST_ALIAS}
     HostName ${VM_SSH_HOSTNAME}
     User ${VM_USERNAME}
     IdentityFile $(vm_ssh_identity_file)
+    UserKnownHostsFile ${VM_SSH_KNOWN_HOSTS_PATH}
     StrictHostKeyChecking accept-new
 __EOF__
 }
@@ -1597,8 +1600,10 @@ function vm_install_ssh_config() {
 
 	mkdir -p "${config_dir}" || vm_fatal "Failed to create SSH config directory: ${config_dir}"
 	[ -f "${VM_SSH_CONFIG_PATH}" ] || : >"${VM_SSH_CONFIG_PATH}"
+	[ -f "${VM_SSH_KNOWN_HOSTS_PATH}" ] || : >"${VM_SSH_KNOWN_HOSTS_PATH}"
 	chmod 700 "${config_dir}" || vm_fatal "Failed to set permissions on ${config_dir}"
 	chmod 600 "${VM_SSH_CONFIG_PATH}" || vm_fatal "Failed to set permissions on ${VM_SSH_CONFIG_PATH}"
+	chmod 600 "${VM_SSH_KNOWN_HOSTS_PATH}" || vm_fatal "Failed to set permissions on ${VM_SSH_KNOWN_HOSTS_PATH}"
 
 	temp_file="$(mktemp "${TMPDIR:-/tmp}/builder-ssh-config.XXXXXX")" || vm_fatal "Failed to create temp file"
 
@@ -1631,12 +1636,19 @@ function vm_install_ssh_config() {
 function vm_remove_ssh_config() {
 	if [ "${VM_DRY_RUN}" = "1" ]; then
 		vm_info "Would remove SSH config: ${VM_SSH_CONFIG_PATH}"
+		vm_info "Would remove known hosts: ${VM_SSH_KNOWN_HOSTS_PATH}"
 		return 0
 	fi
 
-	[ -f "${VM_SSH_CONFIG_PATH}" ] || return 0
-	rm -f "${VM_SSH_CONFIG_PATH}" || vm_fatal "Failed to remove SSH config: ${VM_SSH_CONFIG_PATH}"
-	vm_info "Removed SSH config: ${VM_SSH_CONFIG_PATH}"
+	if [ -f "${VM_SSH_CONFIG_PATH}" ]; then
+		rm -f "${VM_SSH_CONFIG_PATH}" || vm_fatal "Failed to remove SSH config: ${VM_SSH_CONFIG_PATH}"
+		vm_info "Removed SSH config: ${VM_SSH_CONFIG_PATH}"
+	fi
+
+	if [ -f "${VM_SSH_KNOWN_HOSTS_PATH}" ]; then
+		rm -f "${VM_SSH_KNOWN_HOSTS_PATH}" || vm_fatal "Failed to remove known hosts: ${VM_SSH_KNOWN_HOSTS_PATH}"
+		vm_info "Removed known hosts: ${VM_SSH_KNOWN_HOSTS_PATH}"
+	fi
 }
 
 function vm_dispatch_action() {
