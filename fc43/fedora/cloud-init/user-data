@@ -73,6 +73,7 @@ __VM_NMCONNECTION_FILES__
 runcmd:
 __VM_NMCLI_APPLY_CMDS__
   - [ dnf, config-manager, addrepo, --from-repofile, "https://download.docker.com/linux/fedora/docker-ce.repo" ]
+  - [ ssh-keygen, -A ]
   - [ localectl, set-keymap, __VM_KEYBOARD_VC_KEYMAP__ ]
 __VM_LOCALectl_X11_CMD__
 __VM_FIREWALLD_RUNCMD__

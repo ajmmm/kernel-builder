@@ -19,6 +19,37 @@ function vm_require_cmd() {
 	command -v "${cmd}" 1>/dev/null 2>&1 || vm_fatal "I need ${cmd}!"
 }
 
+function vm_verify_yaml_file() {
+	local file_path="${1}"
+
+	vm_require_cmd yq
+	yq eval '.' "${file_path}" 1>/dev/null || vm_fatal "Rendered YAML failed to parse: ${file_path}"
+}
+
+function vm_verify_json_file() {
+	local file_path="${1}"
+
+	vm_require_cmd jq
+	jq empty "${file_path}" || vm_fatal "Rendered JSON failed to parse: ${file_path}"
+}
+
+function vm_verify_structured_file() {
+	local format="${1}"
+	local file_path="${2}"
+
+	case "${format}" in
+		yaml)
+			vm_verify_yaml_file "${file_path}"
+			;;
+		json)
+			vm_verify_json_file "${file_path}"
+			;;
+		*)
+			vm_fatal "Unsupported structured data format: ${format}"
+			;;
+	esac
+}
+
 function vm_quote_cmd() {
 	printf "%q " "$@"
 }
@@ -665,10 +696,7 @@ function vm_render_network_block() {
 		printf "      - %s\n" "${address}"
 
 		if [ "${never_default}" != "yes" ] && [ -n "${gateway}" ]; then
-			printf "    routes:\n"
-			printf "      - to: default\n"
-			printf "        via: %s\n" "${gateway}"
-			[ -n "${metric}" ] && printf "        metric: %s\n" "${metric}"
+			printf "    gateway4: %s\n" "${gateway}"
 		fi
 
 		if [ -n "${dns}" ]; then
@@ -854,10 +882,13 @@ function vm_create_seed_iso() {
 
 	vm_render_template "${VM_CLOUD_INIT_DIR}/user-data" >"${VM_SEED_DIR}/user-data" || vm_fatal "Failed to render user-data"
 	vm_render_template "${VM_CLOUD_INIT_DIR}/meta-data" >"${VM_SEED_DIR}/meta-data" || vm_fatal "Failed to render meta-data"
+	vm_verify_structured_file yaml "${VM_SEED_DIR}/user-data"
+	vm_verify_structured_file yaml "${VM_SEED_DIR}/meta-data"
 
 	if [ -r "${VM_CLOUD_INIT_DIR}/network-config" ]; then
 		vm_render_template "${VM_CLOUD_INIT_DIR}/network-config" >"${VM_SEED_DIR}/network-config" \
 			|| vm_fatal "Failed to render network-config"
+		vm_verify_structured_file yaml "${VM_SEED_DIR}/network-config"
 	else
 		[ "${VM_DRY_RUN}" = "1" ] || rm -f "${VM_SEED_DIR}/network-config"
 	fi
