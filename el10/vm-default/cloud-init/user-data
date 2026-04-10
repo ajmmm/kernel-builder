@@ -16,35 +16,9 @@ users:
     ssh_authorized_keys:
       - __VM_SSH_PUBLIC_KEY__
 
-package_update: __VM_PACKAGE_UPDATE__
-package_upgrade: __VM_PACKAGE_UPGRADE__
-package_reboot_if_required: __VM_PACKAGE_REBOOT_IF_REQUIRED__
-packages:
-  - epel-release
-  - git
-  - htop
-  - nano
-  - vim
-  - tmux
-  - gcc
-  - gcc-c++
-  - make
-  - cmake
-  - ninja-build
-  - dnf-plugins-core
-  - golang
-  - bc
-  - bison
-  - flex
-  - elfutils-libelf-devel
-  - openssl-devel
-  - dwarves
-  - rsync
-  - jq
-  - curl
-  - wget
-  - skopeo
-  - python3-pip
+package_update: false
+package_upgrade: false
+package_reboot_if_required: false
 
 write_files:
   - path: /etc/modules-load.d/k8s.conf
@@ -74,6 +48,10 @@ __VM_NMCONNECTION_FILES__
 
 runcmd:
 __VM_NMCLI_APPLY_CMDS__
+  - [ dnf, -y, install, epel-release ]
+  - [ crb, enable ]
+  - [ sh, -c, "if [ '__VM_PACKAGE_UPGRADE__' = 'true' ]; then dnf -y upgrade; fi" ]
+  - [ dnf, -y, install, git, htop, nano, vim-enhanced, tmux, gcc, gcc-c++, make, cmake, ninja-build, dnf-plugins-core, golang, bc, bison, flex, elfutils-libelf-devel, openssl-devel, dwarves, rsync, jq, curl, wget, skopeo, python3-pip ]
   - [ dnf, config-manager, addrepo, --from-repofile, "https://download.docker.com/linux/rhel/docker-ce.repo" ]
   - [ ssh-keygen, -A ]
   - [ localectl, set-keymap, __VM_KEYBOARD_VC_KEYMAP__ ]

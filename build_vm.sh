@@ -63,7 +63,6 @@ Environment overrides:
   VM_KEYBOARD_OPTIONS   Default: from VM_CONFIG_FILE
   VM_K8S_CHANNEL        Default: from VM_CONFIG_FILE
   VM_CHRONY_MAKESTEP    Default: from VM_CONFIG_FILE
-  VM_PACKAGE_UPDATE     Default: from VM_CONFIG_FILE
   VM_PACKAGE_UPGRADE    Default: from VM_CONFIG_FILE
   VM_PACKAGE_REBOOT_IF_REQUIRED
                         Default: from VM_CONFIG_FILE

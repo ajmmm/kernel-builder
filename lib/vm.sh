@@ -184,34 +184,8 @@ function vm_resolve_auto_bool() {
 	fi
 }
 
-function vm_default_image_baseurl() {
-	local release="${VM_FEDORA_RELEASE}"
-
-	printf "%s\n" "https://download.fedoraproject.org/pub/fedora/linux/releases/${release}/Cloud"
-}
-
-function vm_image_artifacts_url() {
-	printf "%s\n" "${VM_IMAGE_BASEURL}/${VM_ARCH}/images/"
-}
-
-function vm_default_image_name_glob() {
-	printf "%s\n" "Fedora-Cloud-Base-Generic-*.${VM_ARCH}.qcow2"
-}
-
-function vm_default_image_name_regex() {
-	printf "%s\n" "Fedora-Cloud-Base-Generic-[0-9][^\"']*\\.${VM_ARCH}\\.qcow2"
-}
-
-function vm_default_checksum_name_glob() {
-	printf "%s\n" "Fedora-Cloud-*-CHECKSUM"
-}
-
-function vm_default_checksum_name_regex() {
-	printf "%s\n" "Fedora-Cloud-[^\"']*-CHECKSUM"
-}
-
-function vm_target_name() {
-	printf "%s\n" "fc${VM_FEDORA_RELEASE}/vm-default"
+function vm_default_target() {
+	printf "%s\n" "${VM_DEFAULT_TARGET:-fc43/vm-default}"
 }
 
 function vm_normalize_target() {
@@ -235,6 +209,20 @@ function vm_target_slug() {
 	printf "%s\n" "${VM_TARGET}" | tr '/:' '__'
 }
 
+function vm_arch_url_var_name() {
+	case "${VM_ARCH}" in
+		aarch64)
+			printf "%s\n" "VM_IMAGE_ARTIFACTS_URL_ARM64"
+			;;
+		x86_64)
+			printf "%s\n" "VM_IMAGE_ARTIFACTS_URL_AMD64"
+			;;
+		*)
+			vm_fatal "Unsupported guest architecture for image URL resolution: ${VM_ARCH}"
+			;;
+	esac
+}
+
 function vm_load_target_config() {
 	VM_TARGET_DIR="${VM_TARGET_DIR:-$(vm_target_dir)}"
 	VM_CONFIG_FILE="${VM_CONFIG_FILE:-${VM_TARGET_DIR}/vm.conf}"
@@ -253,7 +241,7 @@ function vm_load_parallels_config() {
 }
 
 function vm_resolve_vm_defaults() {
-	VM_NAME="${VM_NAME:-fedora-dev}"
+	VM_NAME="${VM_NAME:-vm-dev}"
 	VM_HOSTNAME="${VM_HOSTNAME:-${VM_NAME}}"
 	VM_FQDN="${VM_FQDN:-${VM_HOSTNAME}.local}"
 	VM_USERNAME="${VM_USERNAME:-dev}"
@@ -268,32 +256,36 @@ function vm_resolve_vm_defaults() {
 	VM_KEYBOARD_VC_KEYMAP="${VM_KEYBOARD_VC_KEYMAP:-gb}"
 	VM_K8S_CHANNEL="${VM_K8S_CHANNEL:-v1.35}"
 	VM_CHRONY_MAKESTEP="${VM_CHRONY_MAKESTEP:-1.0 3}"
-	VM_PACKAGE_UPDATE="${VM_PACKAGE_UPDATE:-true}"
+	if [ -n "${VM_PACKAGE_UPDATE+x}" ] && [ -z "${VM_PACKAGE_UPGRADE+x}" ]; then
+		VM_PACKAGE_UPGRADE="${VM_PACKAGE_UPDATE}"
+	fi
 	VM_PACKAGE_UPGRADE="${VM_PACKAGE_UPGRADE:-true}"
 	VM_PACKAGE_REBOOT_IF_REQUIRED="${VM_PACKAGE_REBOOT_IF_REQUIRED:-true}"
 	VM_WAIT_FOR_UPGRADE="${VM_WAIT_FOR_UPGRADE:-0}"
 	VM_DISABLE_FIREWALLD="${VM_DISABLE_FIREWALLD:-true}"
-	VM_PRL_DISTRIBUTION="${VM_PRL_DISTRIBUTION:-fedora}"
+	VM_PRL_DISTRIBUTION="${VM_PRL_DISTRIBUTION:-linux}"
 	HOST_ARCH="${HOST_ARCH:-$(vm_guess_arch)}"
 	VM_ARCH="${VM_ARCH:-${HOST_ARCH}}"
 	VM_TARGET_SLUG="${VM_TARGET_SLUG:-$(vm_target_slug)}"
 	VM_CACHE_DIR="${VM_CACHE_DIR:-${BASEPATH}/.cache}"
 	VM_IMAGE_DIR="${VM_IMAGE_DIR:-${VM_CACHE_DIR}/images}"
 	VM_SEED_DIR="${VM_SEED_DIR:-${VM_CACHE_DIR}/seed/${VM_TARGET_SLUG}/${VM_NAME}}"
-	VM_HOME_BASE="${VM_HOME_BASE:-${VM_CACHE_DIR}/parallels/${VM_TARGET_SLUG}}"
+	VM_HOME_BASE="${VM_HOME_BASE:-${HOME}/Parallels}"
 	VM_PARALLELS_DIR="${VM_PARALLELS_DIR:-${VM_HOME_BASE}}"
 	VM_BUNDLE_PATH="${VM_BUNDLE_PATH:-${VM_PARALLELS_DIR}/${VM_NAME}.pvm}"
 	VM_VM_DISK_PATH="${VM_VM_DISK_PATH:-${VM_BUNDLE_PATH}/${VM_NAME}.hdd}"
 	VM_CLOUD_INIT_DIR="${VM_CLOUD_INIT_DIR:-${VM_TARGET_DIR}/cloud-init}"
-	VM_IMAGE_BASEURL="${VM_IMAGE_BASEURL:-$(vm_default_image_baseurl)}"
-	VM_IMAGE_ARTIFACTS_URL="${VM_IMAGE_ARTIFACTS_URL:-$(vm_image_artifacts_url)}"
-	VM_IMAGE_NAME_GLOB="${VM_IMAGE_NAME_GLOB:-$(vm_default_image_name_glob)}"
-	VM_IMAGE_NAME_REGEX="${VM_IMAGE_NAME_REGEX:-$(vm_default_image_name_regex)}"
-	VM_CHECKSUM_NAME_GLOB="${VM_CHECKSUM_NAME_GLOB:-$(vm_default_checksum_name_glob)}"
-	VM_CHECKSUM_NAME_REGEX="${VM_CHECKSUM_NAME_REGEX:-$(vm_default_checksum_name_regex)}"
+	if [ -z "${VM_IMAGE_ARTIFACTS_URL}" ]; then
+		local arch_url_var
+		arch_url_var="$(vm_arch_url_var_name)"
+		VM_IMAGE_ARTIFACTS_URL="${!arch_url_var:-${VM_IMAGE_ARTIFACTS_URL:-}}"
+	fi
+	[ -n "${VM_IMAGE_ARTIFACTS_URL}" ] || vm_fatal "VM_IMAGE_ARTIFACTS_URL is not set for ${VM_TARGET} (${VM_ARCH})"
+	[ -n "${VM_IMAGE_NAME_REGEX}" ] || vm_fatal "VM_IMAGE_NAME_REGEX is not set for ${VM_TARGET}"
+	[ -n "${VM_CHECKSUM_NAME_REGEX}" ] || vm_fatal "VM_CHECKSUM_NAME_REGEX is not set for ${VM_TARGET}"
 	VM_SEED_ISO="${VM_SEED_ISO:-${VM_SEED_DIR}/seed.iso}"
 	VM_INSTANCE_ID="${VM_INSTANCE_ID:-${VM_NAME}-01}"
-	VM_SSH_KEY_PATH="${VM_SSH_KEY_PATH:-${HOME}/.ssh/id_ed25519.pub}"
+	VM_SSH_KEY_PATH="${VM_SSH_KEY_PATH:-${HOME}/.ssh/id_rsa.pub}"
 	VM_SSH_HOST_ALIAS="${VM_SSH_HOST_ALIAS:-${VM_NAME}}"
 	VM_SSH_HOSTNAME="${VM_SSH_HOSTNAME:-${VM_NET_0_IPV4_ADDRESS%%/*}}"
 	VM_SSH_CONFIG_DIR="${VM_SSH_CONFIG_DIR:-${VM_CACHE_DIR}/ssh-config.d}"
@@ -359,9 +351,10 @@ function vm_init_defaults() {
 	VM_DRY_RUN="${VM_DRY_RUN:-${VM_DRY_RUN_DEFAULT:-0}}"
 	VM_VERBOSE="${VM_VERBOSE:-${VM_VERBOSE_DEFAULT:-0}}"
 	VM_DEBUG="${VM_DEBUG:-${VM_DEBUG_DEFAULT:-0}}"
-	VM_FEDORA_RELEASE="${VM_FEDORA_RELEASE:-43}"
-	VM_TARGET="${VM_TARGET:-$(vm_target_name)}"
+	VM_TARGET="${VM_TARGET:-$(vm_default_target)}"
 	VM_TARGET="$(vm_normalize_target "${VM_TARGET}")"
+	HOST_ARCH="${HOST_ARCH:-$(vm_guess_arch)}"
+	VM_ARCH="${VM_ARCH:-${HOST_ARCH}}"
 
 	vm_load_target_config
 	vm_load_parallels_config
@@ -427,7 +420,6 @@ function vm_parse_args() {
 				;;
 
 			--upgrade)
-				VM_PACKAGE_UPDATE=true
 				VM_PACKAGE_UPGRADE=true
 				VM_PACKAGE_REBOOT_IF_REQUIRED=true
 				VM_WAIT_FOR_UPGRADE=1
@@ -435,7 +427,6 @@ function vm_parse_args() {
 				;;
 
 			--no-upgrade)
-				VM_PACKAGE_UPDATE=false
 				VM_PACKAGE_UPGRADE=false
 				VM_PACKAGE_REBOOT_IF_REQUIRED=false
 				VM_WAIT_FOR_UPGRADE=0
@@ -483,6 +474,10 @@ function vm_image_stem() {
 	printf "%s\n" "${name}"
 }
 
+function vm_checksum_cache_name() {
+	printf "%s\n" "${VM_TARGET_SLUG}-$(basename "${VM_CHECKSUM_NAME}")"
+}
+
 function vm_select_latest_match() {
 	if [ "$#" -eq 0 ]; then
 		return 1
@@ -492,13 +487,14 @@ function vm_select_latest_match() {
 }
 
 function vm_find_local_image_name() {
-	find "${VM_IMAGE_DIR}" -maxdepth 1 -type f -name "${VM_IMAGE_NAME_GLOB}" -print 2>/dev/null | \
-		awk -F/ '{print $NF}' | sort -V | tail -n1
+	find "${VM_IMAGE_DIR}" -maxdepth 1 -type f -print 2>/dev/null | \
+		awk -F/ '{print $NF}' | grep -E "${VM_IMAGE_NAME_REGEX}" | sort -V | tail -n1
 }
 
 function vm_find_local_checksum_name() {
-	find "${VM_IMAGE_DIR}" -maxdepth 1 -type f -name "${VM_CHECKSUM_NAME_GLOB}" -print 2>/dev/null | \
-		awk -F/ '{print $NF}' | sort -V | tail -n1
+	find "${VM_IMAGE_DIR}" -maxdepth 1 -type f -print 2>/dev/null | \
+		awk -F/ '{print $NF}' | grep -E "^${VM_TARGET_SLUG}-" | sed "s/^${VM_TARGET_SLUG}-//" | \
+		grep -E "${VM_CHECKSUM_NAME_REGEX}" | sort -V | tail -n1
 }
 
 function vm_fetch_image_index() {
@@ -551,7 +547,7 @@ function vm_resolve_image_artifacts() {
 	VM_IMAGE_URL="${VM_IMAGE_URL:-${VM_IMAGE_ARTIFACTS_URL}${VM_IMAGE_NAME}}"
 	VM_CHECKSUM_URL="${VM_CHECKSUM_URL:-${VM_IMAGE_ARTIFACTS_URL}${VM_CHECKSUM_NAME}}"
 	VM_IMAGE_FILE="${VM_IMAGE_FILE:-${VM_IMAGE_DIR}/${VM_IMAGE_NAME}}"
-	VM_CHECKSUM_FILE="${VM_CHECKSUM_FILE:-${VM_IMAGE_DIR}/${VM_CHECKSUM_NAME}}"
+	VM_CHECKSUM_FILE="${VM_CHECKSUM_FILE:-${VM_IMAGE_DIR}/$(vm_checksum_cache_name)}"
 }
 
 function vm_extract_checksum() {
@@ -599,7 +595,7 @@ function vm_read_ssh_key() {
 function vm_download_image() {
 	vm_require_cmd curl
 	vm_ensure_dirs
-	vm_step "Resolving Fedora image artifacts"
+	vm_step "Resolving VM image artifacts"
 	vm_resolve_image_artifacts
 
 	if [ -f "${VM_IMAGE_FILE}" ] && [ -f "${VM_CHECKSUM_FILE}" ]; then
@@ -608,7 +604,7 @@ function vm_download_image() {
 		return 0
 	fi
 
-	vm_step "Downloading Fedora cloud image"
+	vm_step "Downloading VM cloud image"
 	vm_debug "Image URL: ${VM_IMAGE_URL}"
 	vm_debug "Checksum URL: ${VM_CHECKSUM_URL}"
 
@@ -1166,7 +1162,6 @@ function vm_expand_template() {
 		line="${line//__VM_KEYBOARD_VC_KEYMAP__/${VM_KEYBOARD_VC_KEYMAP}}"
 		line="${line//__VM_K8S_CHANNEL__/${VM_K8S_CHANNEL}}"
 		line="${line//__VM_CHRONY_MAKESTEP__/${VM_CHRONY_MAKESTEP}}"
-		line="${line//__VM_PACKAGE_UPDATE__/${VM_PACKAGE_UPDATE}}"
 		line="${line//__VM_PACKAGE_UPGRADE__/${VM_PACKAGE_UPGRADE}}"
 		line="${line//__VM_PACKAGE_REBOOT_IF_REQUIRED__/${VM_PACKAGE_REBOOT_IF_REQUIRED}}"
 		line="${line//__VM_SSH_PUBLIC_KEY__/${ssh_key}}"
