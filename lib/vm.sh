@@ -194,8 +194,37 @@ function vm_image_artifacts_url() {
 	printf "%s\n" "${VM_IMAGE_BASEURL}/${VM_ARCH}/images/"
 }
 
+function vm_default_image_name_glob() {
+	printf "%s\n" "Fedora-Cloud-Base-Generic-*.${VM_ARCH}.qcow2"
+}
+
+function vm_default_image_name_regex() {
+	printf "%s\n" "Fedora-Cloud-Base-Generic-[0-9][^\"']*\\.${VM_ARCH}\\.qcow2"
+}
+
+function vm_default_checksum_name_glob() {
+	printf "%s\n" "Fedora-Cloud-*-CHECKSUM"
+}
+
+function vm_default_checksum_name_regex() {
+	printf "%s\n" "Fedora-Cloud-[^\"']*-CHECKSUM"
+}
+
 function vm_target_name() {
-	printf "%s\n" "fc${VM_FEDORA_RELEASE}/fedora"
+	printf "%s\n" "fc${VM_FEDORA_RELEASE}/vm-default"
+}
+
+function vm_normalize_target() {
+	local target="${1%/}"
+
+	case "${target}" in
+		*/*)
+			printf "%s\n" "${target}"
+			;;
+		*)
+			printf "%s/vm-default\n" "${target}"
+			;;
+	esac
 }
 
 function vm_target_dir() {
@@ -258,6 +287,10 @@ function vm_resolve_vm_defaults() {
 	VM_CLOUD_INIT_DIR="${VM_CLOUD_INIT_DIR:-${VM_TARGET_DIR}/cloud-init}"
 	VM_IMAGE_BASEURL="${VM_IMAGE_BASEURL:-$(vm_default_image_baseurl)}"
 	VM_IMAGE_ARTIFACTS_URL="${VM_IMAGE_ARTIFACTS_URL:-$(vm_image_artifacts_url)}"
+	VM_IMAGE_NAME_GLOB="${VM_IMAGE_NAME_GLOB:-$(vm_default_image_name_glob)}"
+	VM_IMAGE_NAME_REGEX="${VM_IMAGE_NAME_REGEX:-$(vm_default_image_name_regex)}"
+	VM_CHECKSUM_NAME_GLOB="${VM_CHECKSUM_NAME_GLOB:-$(vm_default_checksum_name_glob)}"
+	VM_CHECKSUM_NAME_REGEX="${VM_CHECKSUM_NAME_REGEX:-$(vm_default_checksum_name_regex)}"
 	VM_SEED_ISO="${VM_SEED_ISO:-${VM_SEED_DIR}/seed.iso}"
 	VM_INSTANCE_ID="${VM_INSTANCE_ID:-${VM_NAME}-01}"
 	VM_SSH_KEY_PATH="${VM_SSH_KEY_PATH:-${HOME}/.ssh/id_ed25519.pub}"
@@ -328,6 +361,7 @@ function vm_init_defaults() {
 	VM_DEBUG="${VM_DEBUG:-${VM_DEBUG_DEFAULT:-0}}"
 	VM_FEDORA_RELEASE="${VM_FEDORA_RELEASE:-43}"
 	VM_TARGET="${VM_TARGET:-$(vm_target_name)}"
+	VM_TARGET="$(vm_normalize_target "${VM_TARGET}")"
 
 	vm_load_target_config
 	vm_load_parallels_config
@@ -458,12 +492,12 @@ function vm_select_latest_match() {
 }
 
 function vm_find_local_image_name() {
-	find "${VM_IMAGE_DIR}" -maxdepth 1 -type f -name "Fedora-Cloud-Base-Generic-*.${VM_ARCH}.qcow2" -print 2>/dev/null | \
+	find "${VM_IMAGE_DIR}" -maxdepth 1 -type f -name "${VM_IMAGE_NAME_GLOB}" -print 2>/dev/null | \
 		awk -F/ '{print $NF}' | sort -V | tail -n1
 }
 
 function vm_find_local_checksum_name() {
-	find "${VM_IMAGE_DIR}" -maxdepth 1 -type f -name "Fedora-Cloud-*-CHECKSUM" -print 2>/dev/null | \
+	find "${VM_IMAGE_DIR}" -maxdepth 1 -type f -name "${VM_CHECKSUM_NAME_GLOB}" -print 2>/dev/null | \
 		awk -F/ '{print $NF}' | sort -V | tail -n1
 }
 
@@ -477,7 +511,7 @@ function vm_resolve_remote_image_name() {
 	local index_html
 
 	index_html="$(vm_fetch_image_index)" || exit 1
-	printf "%s\n" "${index_html}" | grep -Eo "Fedora-Cloud-Base-Generic-[0-9][^\"']*\.${VM_ARCH}\.qcow2" | \
+	printf "%s\n" "${index_html}" | grep -Eo "${VM_IMAGE_NAME_REGEX}" | \
 		sort -V | tail -n1
 }
 
@@ -485,7 +519,7 @@ function vm_resolve_remote_checksum_name() {
 	local index_html
 
 	index_html="$(vm_fetch_image_index)" || exit 1
-	printf "%s\n" "${index_html}" | grep -Eo "Fedora-Cloud-[^\"']*-CHECKSUM" | \
+	printf "%s\n" "${index_html}" | grep -Eo "${VM_CHECKSUM_NAME_REGEX}" | \
 		sort -V | tail -n1
 }
 
@@ -511,8 +545,8 @@ function vm_resolve_image_artifacts() {
 		VM_CHECKSUM_NAME="$(vm_resolve_remote_checksum_name)" || exit 1
 	fi
 
-	[ -n "${VM_IMAGE_NAME}" ] || vm_fatal "Unable to resolve Fedora qcow2 filename from ${VM_IMAGE_ARTIFACTS_URL}"
-	[ -n "${VM_CHECKSUM_NAME}" ] || vm_fatal "Unable to resolve Fedora CHECKSUM filename from ${VM_IMAGE_ARTIFACTS_URL}"
+	[ -n "${VM_IMAGE_NAME}" ] || vm_fatal "Unable to resolve image filename from ${VM_IMAGE_ARTIFACTS_URL}"
+	[ -n "${VM_CHECKSUM_NAME}" ] || vm_fatal "Unable to resolve checksum filename from ${VM_IMAGE_ARTIFACTS_URL}"
 
 	VM_IMAGE_URL="${VM_IMAGE_URL:-${VM_IMAGE_ARTIFACTS_URL}${VM_IMAGE_NAME}}"
 	VM_CHECKSUM_URL="${VM_CHECKSUM_URL:-${VM_IMAGE_ARTIFACTS_URL}${VM_CHECKSUM_NAME}}"

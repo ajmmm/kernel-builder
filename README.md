@@ -29,17 +29,17 @@ The VM automation is intentionally split between:
 Typical flow:
 
 ```bash
-./build_vm.sh --target fc43/fedora image
-./build_vm.sh --target fc43/fedora seed
-./build_vm.sh --target fc43/fedora create
-./build_vm.sh --target fc43/fedora boot
-./build_vm.sh --target fc43/fedora ssh-config
+./build_vm.sh --target fc43 image
+./build_vm.sh --target fc43 seed
+./build_vm.sh --target fc43 create
+./build_vm.sh --target fc43 boot
+./build_vm.sh --target fc43 ssh-config
 ```
 
 For a safe preview of Parallels commands without applying them:
 
 ```bash
-./build_vm.sh --target fc43/fedora --dry-run create
+./build_vm.sh --target fc43 --dry-run create
 ```
 
 Or all at once:
@@ -48,4 +48,4 @@ Or all at once:
 make up
 ```
 
-The default VM target is `fc43/fedora`, backed by [fc43/fedora/vm.conf](/Users/almcwill/Develop/builder/fc43/fedora/vm.conf), [fc43/fedora/cloud-init/user-data](/Users/almcwill/Develop/builder/fc43/fedora/cloud-init/user-data), and [fc43/fedora/cloud-init/meta-data](/Users/almcwill/Develop/builder/fc43/fedora/cloud-init/meta-data). Add another target by creating a new repo-relative target path such as `fc43/minimal/` or `fc44/fedora/`, then pass `--target` or set `VM_TARGET`.
+The default VM target is `fc43/vm-default`, and a short target like `fc43` automatically resolves to `fc43/vm-default`. That default target is backed by [fc43/vm-default/vm.conf](/Users/almcwill/Develop/builder/fc43/vm-default/vm.conf), [fc43/vm-default/cloud-init/user-data](/Users/almcwill/Develop/builder/fc43/vm-default/cloud-init/user-data), and [fc43/vm-default/cloud-init/meta-data](/Users/almcwill/Develop/builder/fc43/vm-default/cloud-init/meta-data). Add another target by creating a new repo-relative target path such as `fc43/minimal/` or `el10/vm-default/`, then pass `--target` or set `VM_TARGET`.

@@ -38,9 +38,10 @@ Commands:
 
 Environment overrides:
   VM_FEDORA_RELEASE     Default: 43
-  VM_TARGET             Default: fc43/fedora
-  VM_TARGET_DIR         Default: ./fc43/fedora
-  VM_CONFIG_FILE        Default: ./fc43/fedora/vm.conf
+  VM_TARGET             Default: fc43/vm-default
+                        Short target names like fc43 resolve to fc43/vm-default
+  VM_TARGET_DIR         Default: ./fc43/vm-default
+  VM_CONFIG_FILE        Default: ./fc43/vm-default/vm.conf
   PRL_CONFIG_FILE       Default: ./config/parallels.conf
   VM_DRY_RUN            Default: 0
   VM_VERBOSE            Default: 0
@@ -66,7 +67,7 @@ Environment overrides:
   VM_PACKAGE_UPGRADE    Default: from VM_CONFIG_FILE
   VM_PACKAGE_REBOOT_IF_REQUIRED
                         Default: from VM_CONFIG_FILE
-  VM_CLOUD_INIT_DIR     Default: ./fc43/fedora/cloud-init
+  VM_CLOUD_INIT_DIR     Default: ./fc43/vm-default/cloud-init
   VM_SSH_PUBLIC_KEY     Override the SSH key to inject
 __EOF__
 )

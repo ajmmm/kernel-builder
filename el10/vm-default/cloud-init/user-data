@@ -1,0 +1,84 @@
+#cloud-config
+hostname: __VM_HOSTNAME__
+fqdn: __VM_FQDN__
+
+timezone: __VM_TIMEZONE__
+locale: en_GB.UTF-8
+__VM_KEYBOARD_BLOCK__
+
+users:
+  - default
+  - name: __VM_USERNAME__
+    gecos: Development User
+    groups: [wheel]
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    ssh_authorized_keys:
+      - __VM_SSH_PUBLIC_KEY__
+
+package_update: __VM_PACKAGE_UPDATE__
+package_upgrade: __VM_PACKAGE_UPGRADE__
+package_reboot_if_required: __VM_PACKAGE_REBOOT_IF_REQUIRED__
+packages:
+  - epel-release
+  - git
+  - htop
+  - nano
+  - vim
+  - tmux
+  - gcc
+  - gcc-c++
+  - make
+  - cmake
+  - ninja-build
+  - dnf-plugins-core
+  - golang
+  - bc
+  - bison
+  - flex
+  - elfutils-libelf-devel
+  - openssl-devel
+  - dwarves
+  - rsync
+  - jq
+  - curl
+  - wget
+  - skopeo
+  - python3-pip
+
+write_files:
+  - path: /etc/modules-load.d/k8s.conf
+    permissions: "0644"
+    content: |
+      overlay
+      br_netfilter
+  - path: /etc/vconsole.conf
+    permissions: "0644"
+    content: |
+      KEYMAP=__VM_KEYBOARD_VC_KEYMAP__
+  - path: /etc/yum.repos.d/kubernetes.repo
+    permissions: "0644"
+    content: |
+      [kubernetes]
+      name=Kubernetes
+      baseurl=https://pkgs.k8s.io/core:/stable:/__VM_K8S_CHANNEL__/rpm/
+      enabled=1
+      gpgcheck=1
+      gpgkey=https://pkgs.k8s.io/core:/stable:/__VM_K8S_CHANNEL__/rpm/repodata/repomd.xml.key
+      exclude=kubelet kubeadm kubectl cri-tools kubernetes-cni
+  - path: /etc/chrony.d/10-builder.conf
+    permissions: "0644"
+    content: |
+      makestep __VM_CHRONY_MAKESTEP__
+__VM_NMCONNECTION_FILES__
+
+runcmd:
+__VM_NMCLI_APPLY_CMDS__
+  - [ dnf, config-manager, addrepo, --from-repofile, "https://download.docker.com/linux/rhel/docker-ce.repo" ]
+  - [ ssh-keygen, -A ]
+  - [ localectl, set-keymap, __VM_KEYBOARD_VC_KEYMAP__ ]
+__VM_LOCALectl_X11_CMD__
+__VM_FIREWALLD_RUNCMD__
+  - [ systemctl, enable, --now, chronyd ]
+  - [ systemctl, enable, --now, sshd ]
+  - [ sh, -c, "echo 'done' > /var/lib/cloud/instance/devbox-ready" ]
