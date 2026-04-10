@@ -12,7 +12,7 @@ vm_init_defaults
 [ "${VM_DEBUG}" = "1" ] && set -x
 
 HELPTEXT=$(cat <<__EOF__
-${BASENAME} [--target <path>] [--dry-run] [--debug] <command>
+${BASENAME} [--target <path>] [--name <vm-name>] [--upgrade|--no-upgrade] [--dry-run] [--debug] <command>
 
 Commands:
   image         Download and prepare the Fedora boot image
@@ -29,7 +29,9 @@ Commands:
   destroy       Delete the VM registration
   full-recycle  Force-stop, delete, create, and start the VM
   status        Show VM status
-  ssh-config    Print ssh config snippet for the VM
+  ssh-config    Install or update the repo-local SSH include file for the VM
+  ssh-config-print
+                Print ssh config snippet for the VM
   up            Run image, seed, create, and boot
   help          Show this help text
 
@@ -41,6 +43,7 @@ Environment overrides:
   PRL_CONFIG_FILE       Default: ./config/parallels.conf
   VM_DRY_RUN            Default: 0
   VM_DEBUG              Default: 0
+  VM_WAIT_FOR_UPGRADE   Default: 0
   VM_NAME               Default: from VM_CONFIG_FILE
   VM_HOSTNAME           Default: from VM_CONFIG_FILE
   VM_FQDN               Default: from VM_CONFIG_FILE
@@ -56,6 +59,10 @@ Environment overrides:
   VM_KEYBOARD_OPTIONS   Default: from VM_CONFIG_FILE
   VM_K8S_CHANNEL        Default: from VM_CONFIG_FILE
   VM_CHRONY_MAKESTEP    Default: from VM_CONFIG_FILE
+  VM_PACKAGE_UPDATE     Default: from VM_CONFIG_FILE
+  VM_PACKAGE_UPGRADE    Default: from VM_CONFIG_FILE
+  VM_PACKAGE_REBOOT_IF_REQUIRED
+                        Default: from VM_CONFIG_FILE
   VM_CLOUD_INIT_DIR     Default: ./fc43/fedora/cloud-init
   VM_SSH_PUBLIC_KEY     Override the SSH key to inject
 __EOF__
@@ -120,6 +127,10 @@ case "${VM_COMMAND}" in
 		;;
 
 	ssh-config)
+		vm_install_ssh_config
+		;;
+
+	ssh-config-print)
 		vm_print_ssh_config
 		;;
 
@@ -129,6 +140,7 @@ case "${VM_COMMAND}" in
 		vm_create_seed_iso
 		vm_create
 		vm_boot
+		vm_wait_for_upgrade_cycle
 		;;
 
 	help|-h|--help)

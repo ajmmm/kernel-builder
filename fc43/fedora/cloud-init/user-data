@@ -16,9 +16,9 @@ users:
     ssh_authorized_keys:
       - __VM_SSH_PUBLIC_KEY__
 
-package_update: true
-package_upgrade: true
-package_reboot_if_required: true
+package_update: __VM_PACKAGE_UPDATE__
+package_upgrade: __VM_PACKAGE_UPGRADE__
+package_reboot_if_required: __VM_PACKAGE_REBOOT_IF_REQUIRED__
 packages:
   - git
   - nano

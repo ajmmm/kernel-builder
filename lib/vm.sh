@@ -167,6 +167,10 @@ function vm_resolve_vm_defaults() {
 	VM_KEYBOARD_VC_KEYMAP="${VM_KEYBOARD_VC_KEYMAP:-gb}"
 	VM_K8S_CHANNEL="${VM_K8S_CHANNEL:-v1.35}"
 	VM_CHRONY_MAKESTEP="${VM_CHRONY_MAKESTEP:-1.0 3}"
+	VM_PACKAGE_UPDATE="${VM_PACKAGE_UPDATE:-true}"
+	VM_PACKAGE_UPGRADE="${VM_PACKAGE_UPGRADE:-true}"
+	VM_PACKAGE_REBOOT_IF_REQUIRED="${VM_PACKAGE_REBOOT_IF_REQUIRED:-true}"
+	VM_WAIT_FOR_UPGRADE="${VM_WAIT_FOR_UPGRADE:-0}"
 	VM_DISABLE_FIREWALLD="${VM_DISABLE_FIREWALLD:-true}"
 	VM_PRL_DISTRIBUTION="${VM_PRL_DISTRIBUTION:-fedora}"
 	HOST_ARCH="${HOST_ARCH:-$(vm_guess_arch)}"
@@ -185,6 +189,11 @@ function vm_resolve_vm_defaults() {
 	VM_SEED_ISO="${VM_SEED_ISO:-${VM_SEED_DIR}/seed.iso}"
 	VM_INSTANCE_ID="${VM_INSTANCE_ID:-${VM_NAME}-01}"
 	VM_SSH_KEY_PATH="${VM_SSH_KEY_PATH:-${HOME}/.ssh/id_ed25519.pub}"
+	VM_SSH_HOST_ALIAS="${VM_SSH_HOST_ALIAS:-${VM_NAME}}"
+	VM_SSH_HOSTNAME="${VM_SSH_HOSTNAME:-${VM_NET_0_IPV4_ADDRESS%%/*}}"
+	VM_SSH_CONFIG_DIR="${VM_SSH_CONFIG_DIR:-${VM_CACHE_DIR}/ssh-config.d}"
+	VM_SSH_CONFIG_BASENAME="${VM_SSH_CONFIG_BASENAME:-builder.conf}"
+	VM_SSH_CONFIG_PATH="${VM_SSH_CONFIG_PATH:-${VM_SSH_CONFIG_DIR}/${VM_SSH_CONFIG_BASENAME}}"
 	VM_CONVERTED_DIR="${VM_CONVERTED_DIR:-${VM_IMAGE_DIR}/converted}"
 	VM_RECREATE="${VM_RECREATE:-0}"
 }
@@ -256,6 +265,12 @@ function vm_parse_args() {
 
 	while [ "$#" -gt 0 ]; do
 		case "${1}" in
+			--name|--instance-name)
+				[ -n "${2}" ] || vm_fatal "${1} requires a value"
+				VM_NAME="${2}"
+				shift 2
+				;;
+
 			--target)
 				[ -n "${2}" ] || vm_fatal "--target requires a value"
 				VM_TARGET="${2}"
@@ -287,6 +302,22 @@ function vm_parse_args() {
 
 			--debug)
 				VM_DEBUG=1
+				shift
+				;;
+
+			--upgrade)
+				VM_PACKAGE_UPDATE=true
+				VM_PACKAGE_UPGRADE=true
+				VM_PACKAGE_REBOOT_IF_REQUIRED=true
+				VM_WAIT_FOR_UPGRADE=1
+				shift
+				;;
+
+			--no-upgrade)
+				VM_PACKAGE_UPDATE=false
+				VM_PACKAGE_UPGRADE=false
+				VM_PACKAGE_REBOOT_IF_REQUIRED=false
+				VM_WAIT_FOR_UPGRADE=0
 				shift
 				;;
 
@@ -609,7 +640,9 @@ function vm_clone_boot_disk() {
 
 	vm_prepare_boot_disk_paths
 	[ -d "${VM_BOOT_IMAGE_FILE}" ] || vm_fatal "Base boot disk not found: ${VM_BOOT_IMAGE_FILE}"
-	[ -d "${VM_BUNDLE_PATH}" ] || vm_fatal "VM bundle path not found: ${VM_BUNDLE_PATH}"
+	if [ "${VM_DRY_RUN}" != "1" ]; then
+		[ -d "${VM_BUNDLE_PATH}" ] || vm_fatal "VM bundle path not found: ${VM_BUNDLE_PATH}"
+	fi
 
 	[ "${VM_DRY_RUN}" = "1" ] || rm -rf "${VM_VM_DISK_PATH}"
 	vm_run cp -R "${VM_BOOT_IMAGE_FILE}" "${VM_VM_DISK_PATH}" \
@@ -654,6 +687,133 @@ function vm_normalize_mac() {
 	printf "%s:%s:%s:%s:%s:%s\n" \
 		"${mac:0:2}" "${mac:2:2}" "${mac:4:2}" \
 		"${mac:6:2}" "${mac:8:2}" "${mac:10:2}"
+}
+
+function vm_ssh_identity_file() {
+	case "${VM_SSH_KEY_PATH}" in
+		*.pub)
+			printf "%s\n" "${VM_SSH_KEY_PATH%.pub}"
+			;;
+		*)
+			printf "%s\n" "${VM_SSH_KEY_PATH}"
+			;;
+	esac
+}
+
+function vm_ssh_base_args() {
+	printf "%s\n" \
+		"-o" "BatchMode=yes" \
+		"-o" "StrictHostKeyChecking=no" \
+		"-o" "UserKnownHostsFile=/dev/null" \
+		"-o" "ConnectTimeout=5"
+}
+
+function vm_ssh_run() {
+	local remote_cmd="${1}"
+	local ssh_args=()
+
+	while IFS= read -r arg; do
+		ssh_args+=("${arg}")
+	done < <(vm_ssh_base_args)
+
+	vm_run ssh "${ssh_args[@]}" "${VM_USERNAME}@${VM_SSH_HOSTNAME}" "${remote_cmd}"
+}
+
+function vm_wait_for_ssh_up() {
+	local ssh_args=()
+	local deadline=$((SECONDS + 300))
+
+	while IFS= read -r arg; do
+		ssh_args+=("${arg}")
+	done < <(vm_ssh_base_args)
+
+	while [ "${SECONDS}" -lt "${deadline}" ]; do
+		if ssh "${ssh_args[@]}" "${VM_USERNAME}@${VM_SSH_HOSTNAME}" true 1>/dev/null 2>&1; then
+			return 0
+		fi
+		sleep 2
+	done
+
+	return 1
+}
+
+function vm_wait_for_ssh_down() {
+	local ssh_args=()
+	local deadline=$((SECONDS + 180))
+
+	while IFS= read -r arg; do
+		ssh_args+=("${arg}")
+	done < <(vm_ssh_base_args)
+
+	while [ "${SECONDS}" -lt "${deadline}" ]; do
+		if ! ssh "${ssh_args[@]}" "${VM_USERNAME}@${VM_SSH_HOSTNAME}" true 1>/dev/null 2>&1; then
+			return 0
+		fi
+		sleep 2
+	done
+
+	return 1
+}
+
+function vm_wait_for_guest_ready() {
+	local deadline=$((SECONDS + 1800))
+
+	vm_wait_for_ssh_up || return 1
+
+	while [ "${SECONDS}" -lt "${deadline}" ]; do
+		if ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 \
+			"${VM_USERNAME}@${VM_SSH_HOSTNAME}" \
+			"test -f /var/lib/cloud/instance/devbox-ready" 1>/dev/null 2>&1; then
+			return 0
+		fi
+
+		if ! vm_wait_for_ssh_up; then
+			return 1
+		fi
+		sleep 5
+	done
+
+	return 1
+}
+
+function vm_running_kernel_release() {
+	ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 \
+		"${VM_USERNAME}@${VM_SSH_HOSTNAME}" "uname -r" 2>/dev/null
+}
+
+function vm_default_kernel_release() {
+	ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 \
+		"${VM_USERNAME}@${VM_SSH_HOSTNAME}" "basename \"\$(sudo grubby --default-kernel)\" | sed 's/^vmlinuz-//'" 2>/dev/null
+}
+
+function vm_guest_reboot() {
+	vm_run ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 \
+		"${VM_USERNAME}@${VM_SSH_HOSTNAME}" "sudo shutdown -r now" || true
+}
+
+function vm_wait_for_upgrade_cycle() {
+	local running_kernel default_kernel
+
+	[ "${VM_DRY_RUN}" = "1" ] && return 0
+	[ "${VM_WAIT_FOR_UPGRADE}" = "1" ] || return 0
+
+	echo "Waiting for guest SSH on ${VM_SSH_HOSTNAME}..."
+	vm_wait_for_ssh_up || vm_fatal "Timed out waiting for SSH on ${VM_SSH_HOSTNAME}"
+
+	echo "Waiting for cloud-init to finish inside ${VM_NAME}..."
+	vm_wait_for_guest_ready || vm_fatal "Timed out waiting for cloud-init completion in ${VM_NAME}"
+
+	running_kernel="$(vm_running_kernel_release)"
+	default_kernel="$(vm_default_kernel_release)"
+
+	if [ -n "${running_kernel}" ] && [ -n "${default_kernel}" ] && [ "${running_kernel}" != "${default_kernel}" ]; then
+		echo "Guest upgrade installed a new default kernel (${default_kernel}); rebooting ${VM_NAME}."
+		vm_guest_reboot
+		vm_wait_for_ssh_down || vm_fatal "Timed out waiting for ${VM_NAME} to begin rebooting"
+		vm_wait_for_ssh_up || vm_fatal "Timed out waiting for ${VM_NAME} to come back after reboot"
+		running_kernel="$(vm_running_kernel_release)"
+		[ "${running_kernel}" = "${default_kernel}" ] || vm_fatal "Guest reboot completed but kernel is still ${running_kernel}, expected ${default_kernel}"
+	fi
 }
 
 function vm_network_dns_count() {
@@ -857,6 +1017,9 @@ function vm_expand_template() {
 		line="${line//__VM_KEYBOARD_VC_KEYMAP__/${VM_KEYBOARD_VC_KEYMAP}}"
 		line="${line//__VM_K8S_CHANNEL__/${VM_K8S_CHANNEL}}"
 		line="${line//__VM_CHRONY_MAKESTEP__/${VM_CHRONY_MAKESTEP}}"
+		line="${line//__VM_PACKAGE_UPDATE__/${VM_PACKAGE_UPDATE}}"
+		line="${line//__VM_PACKAGE_UPGRADE__/${VM_PACKAGE_UPGRADE}}"
+		line="${line//__VM_PACKAGE_REBOOT_IF_REQUIRED__/${VM_PACKAGE_REBOOT_IF_REQUIRED}}"
 		line="${line//__VM_SSH_PUBLIC_KEY__/${ssh_key}}"
 		printf "%s\n" "${line}"
 	done <"${template_path}"
@@ -920,6 +1083,7 @@ function vm_stop_destroy() {
 function vm_create_boot() {
 	vm_create
 	vm_boot
+	vm_wait_for_upgrade_cycle
 }
 
 function vm_full_recycle() {
@@ -927,6 +1091,7 @@ function vm_full_recycle() {
 	vm_destroy
 	vm_create
 	vm_boot
+	vm_wait_for_upgrade_cycle
 }
 
 function vm_parallels_bin() {
@@ -1231,10 +1396,21 @@ __EOF__
 }
 
 function vm_down() {
-	local prlctl
-	prlctl="$(vm_parallels_bin)"
-	[ -x "${prlctl}" ] || vm_fatal "Parallels CLI not found: ${prlctl}"
-	vm_run "${prlctl}" stop "${VM_NAME}" || vm_fatal "Failed to stop VM: ${VM_NAME}"
+	[ "${VM_DRY_RUN}" = "1" ] && {
+		vm_run ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 \
+			"${VM_USERNAME}@${VM_SSH_HOSTNAME}" "sudo shutdown -P now"
+		return 0
+	}
+
+	if ! vm_wait_for_ssh_up; then
+		vm_fatal "SSH is not reachable for ${VM_NAME}; use kill if you need to force-stop it."
+	fi
+
+	vm_run ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 \
+		"${VM_USERNAME}@${VM_SSH_HOSTNAME}" "sudo shutdown -P now" \
+		|| vm_fatal "Failed to request guest poweroff for ${VM_NAME}"
+
+	vm_wait_for_ssh_down || vm_fatal "Timed out waiting for ${VM_NAME} to power off"
 }
 
 function vm_kill() {
@@ -1260,10 +1436,60 @@ function vm_status() {
 
 function vm_print_ssh_config() {
 	cat <<__EOF__
-Host ${VM_NAME}
-    HostName <set-vm-ip-or-dns-name>
+Host ${VM_SSH_HOST_ALIAS}
+    HostName ${VM_SSH_HOSTNAME}
     User ${VM_USERNAME}
-    IdentityFile ${HOME}/.ssh/id_ed25519
+    IdentityFile $(vm_ssh_identity_file)
     StrictHostKeyChecking accept-new
 __EOF__
+}
+
+function vm_install_ssh_config() {
+	local config_dir managed_begin managed_end temp_file
+
+	config_dir="$(dirname "${VM_SSH_CONFIG_PATH}")"
+	managed_begin="# builder-vm:${VM_TARGET}:${VM_SSH_HOST_ALIAS}:begin"
+	managed_end="# builder-vm:${VM_TARGET}:${VM_SSH_HOST_ALIAS}:end"
+
+	[ "${VM_DRY_RUN}" = "1" ] && {
+		vm_info "Would install SSH config block into ${VM_SSH_CONFIG_PATH}:"
+		printf "%s\n" "${managed_begin}"
+		vm_print_ssh_config
+		printf "%s\n" "${managed_end}"
+		printf "\nAdd this to ~/.ssh/config if you have not already:\n"
+		printf "Include %s/*.conf\n" "${VM_SSH_CONFIG_DIR}"
+		return 0
+	}
+
+	mkdir -p "${config_dir}" || vm_fatal "Failed to create SSH config directory: ${config_dir}"
+	[ -f "${VM_SSH_CONFIG_PATH}" ] || : >"${VM_SSH_CONFIG_PATH}"
+	chmod 700 "${config_dir}" || vm_fatal "Failed to set permissions on ${config_dir}"
+	chmod 600 "${VM_SSH_CONFIG_PATH}" || vm_fatal "Failed to set permissions on ${VM_SSH_CONFIG_PATH}"
+
+	temp_file="$(mktemp "${TMPDIR:-/tmp}/builder-ssh-config.XXXXXX")" || vm_fatal "Failed to create temp file"
+
+	awk -v begin="${managed_begin}" -v end="${managed_end}" '
+		$0 == begin { skip=1; next }
+		$0 == end { skip=0; next }
+		skip != 1 { print }
+	' "${VM_SSH_CONFIG_PATH}" >"${temp_file}" || {
+		rm -f "${temp_file}"
+		vm_fatal "Failed to rewrite ${VM_SSH_CONFIG_PATH}"
+	}
+
+	{
+		cat "${temp_file}"
+		[ -s "${temp_file}" ] && printf "\n"
+		printf "%s\n" "${managed_begin}"
+		vm_print_ssh_config
+		printf "%s\n" "${managed_end}"
+	} >"${VM_SSH_CONFIG_PATH}" || {
+		rm -f "${temp_file}"
+		vm_fatal "Failed to update ${VM_SSH_CONFIG_PATH}"
+	}
+
+	rm -f "${temp_file}"
+	vm_info "Updated SSH config: ${VM_SSH_CONFIG_PATH}"
+	vm_info "Add this to ~/.ssh/config if you have not already:"
+	vm_info "Include ${VM_SSH_CONFIG_DIR}/*.conf"
 }
