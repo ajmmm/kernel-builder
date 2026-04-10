@@ -5,17 +5,20 @@ BASEPATH=$(cd "$(dirname "${0}")" && pwd)
 
 . "${BASEPATH}/lib/vm.sh"
 
-COMMAND="$(vm_parse_args "$@")"
+vm_parse_args "$@"
 
 vm_init_defaults
 
+[ "${VM_DEBUG}" = "1" ] && set -x
+
 HELPTEXT=$(cat <<__EOF__
-${BASENAME} [--target <path>] <command>
+${BASENAME} [--target <path>] [--dry-run] [--debug] <command>
 
 Commands:
   image         Download the Fedora cloud image
   seed          Generate cloud-init seed media
   create        Create the Parallels VM
+  prl-config    Apply Parallels VM settings to an existing VM
   boot          Start the VM
   down          Stop the VM
   destroy       Delete the VM registration
@@ -29,6 +32,9 @@ Environment overrides:
   VM_TARGET             Default: fc43/fedora
   VM_TARGET_DIR         Default: ./fc43/fedora
   VM_CONFIG_FILE        Default: ./fc43/fedora/vm.conf
+  PRL_CONFIG_FILE       Default: ./config/parallels.conf
+  VM_DRY_RUN            Default: 0
+  VM_DEBUG              Default: 0
   VM_NAME               Default: from VM_CONFIG_FILE
   VM_HOSTNAME           Default: from VM_CONFIG_FILE
   VM_FQDN               Default: from VM_CONFIG_FILE
@@ -49,7 +55,7 @@ Environment overrides:
 __EOF__
 )
 
-case "${COMMAND}" in
+case "${VM_COMMAND}" in
 	image)
 		vm_download_image
 		;;
@@ -60,6 +66,10 @@ case "${COMMAND}" in
 
 	create)
 		vm_create
+		;;
+
+	prl-config)
+		vm_apply_prl_config
 		;;
 
 	boot|start)
@@ -95,6 +105,6 @@ case "${COMMAND}" in
 
 	*)
 		echo "${HELPTEXT}"
-		vm_fatal "Unknown command: ${COMMAND}"
+		vm_fatal "Unknown command: ${VM_COMMAND}"
 		;;
 esac

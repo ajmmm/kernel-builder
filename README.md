@@ -36,6 +36,12 @@ Typical flow:
 ./build_vm.sh --target fc43/fedora ssh-config
 ```
 
+For a safe preview of Parallels commands without applying them:
+
+```bash
+./build_vm.sh --target fc43/fedora --dry-run create
+```
+
 Or all at once:
 
 ```bash

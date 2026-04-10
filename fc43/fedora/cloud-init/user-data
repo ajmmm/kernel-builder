@@ -4,11 +4,7 @@ fqdn: __VM_FQDN__
 
 timezone: __VM_TIMEZONE__
 locale: en_GB.UTF-8
-keyboard:
-  layout: __VM_KEYBOARD_LAYOUT__
-  model: __VM_KEYBOARD_MODEL__
-  variant: __VM_KEYBOARD_VARIANT__
-  options: __VM_KEYBOARD_OPTIONS__
+__VM_KEYBOARD_BLOCK__
 
 users:
   - default
@@ -52,6 +48,10 @@ write_files:
     content: |
       overlay
       br_netfilter
+  - path: /etc/vconsole.conf
+    permissions: "0644"
+    content: |
+      KEYMAP=__VM_KEYBOARD_VC_KEYMAP__
   - path: /etc/yum.repos.d/kubernetes.repo
     permissions: "0644"
     content: |
@@ -69,6 +69,8 @@ write_files:
 
 runcmd:
   - [ dnf, config-manager, addrepo, --from-repofile, https://download.docker.com/linux/fedora/docker-ce.repo ]
+  - [ localectl, set-keymap, __VM_KEYBOARD_VC_KEYMAP__ ]
+__VM_LOCALectl_X11_CMD__
   - [ systemctl, enable, --now, chronyd ]
   - [ systemctl, enable, --now, sshd ]
   - [ sh, -c, "echo 'done' > /var/lib/cloud/instance/devbox-ready" ]
